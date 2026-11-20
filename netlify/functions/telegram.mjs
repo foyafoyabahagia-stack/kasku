@@ -5,18 +5,17 @@ import {
   openStore, readMonth, readMonths, addTransaction, removeTransaction,
   listMonths, latestTransaction,
 } from './lib/store.mjs';
-import { todayISO, monthOf, isValidMonth, isValidYear, monthsOfYear, shortDate, isValidISODate } from './lib/dates.mjs';
+import { todayISO, monthOf, isValidMonth, isValidYear, monthsOfYear, shortDate } from './lib/dates.mjs';
 import { parseEntry } from './lib/entry.mjs';
-import { guessCategory, CATEGORIES, sanitizeCategory } from './lib/categories.mjs';
+import { guessCategory, CATEGORIES } from './lib/categories.mjs';
 import { totals, flatten } from './lib/analytics.mjs';
 import {
   sendMessage, editMessageText, answerCallbackQuery, escapeHtml, hasBotToken,
-  getFile, downloadFile,
 } from './lib/telegram-api.mjs';
 import {
-  HELP_TEXT, transactionText, monthReportText, yearReportText, balanceText, receiptText,
+  HELP_TEXT, transactionText, monthReportText, yearReportText, balanceText,
 } from './lib/report.mjs';
-import { hasVision, readReceiptImage } from './lib/vision.mjs';
+import { hasVision } from './lib/vision.mjs';
 
 function allowedChats() {
   return String(process.env.TELEGRAM_ALLOWED_CHAT_ID || '')
@@ -53,12 +52,6 @@ async function scanUsage(store) {
   return Number(doc?.count) || 0;
 }
 
-async function noteScan(store) {
-  const key = `scan/usage-${todayISO()}`;
-  const doc = (await store.get(key, { type: 'json' })) || {};
-  await store.setJSON(key, { count: (Number(doc.count) || 0) + 1, updatedAt: new Date().toISOString() });
-}
-
 function isImageMessage(message) {
   if (Array.isArray(message.photo) && message.photo.length) return true;
   const mime = String(message.document?.mime_type || '');
@@ -72,16 +65,7 @@ function bestPhotoFileId(message) {
   return message.document?.file_id || '';
 }
 
-function scanKeyboard(id) {
-  return {
-    inline_keyboard: [[
-      { text: 'Simpan', callback_data: `rcpt:save:${id}` },
-      { text: 'Batal', callback_data: `rcpt:cancel:${id}` },
-    ]],
-  };
-}
-
-async function handleReceipt(store, message) {
+async function handleReceipt(store, message, requestUrl) {
   const chatId = message.chat.id;
 
   if (!hasVision()) {
@@ -100,237 +84,42 @@ async function handleReceipt(store, message) {
 
   const ack = await sendMessage(chatId, 'Membaca struk…');
   const ackId = ack.ok ? ack.data?.result?.message_id : null;
-  const editAck = async (text, options = {}) => {
-    if (ackId) await editMessageText(chatId, ackId, text, options);
-    else await sendMessage(chatId, text, options);
-  };
+
+  const origin = process.env.URL || process.env.DEPLOY_PRIME_URL || new URL(requestUrl).origin;
+  const endpoint = new URL('/.netlify/functions/scan-background', origin);
+  let status = 0;
 
   try {
     const fileId = bestPhotoFileId(message);
     if (!fileId) throw new Error('Foto tidak ditemukan pada pesan.');
 
-    const info = await getFile(fileId);
-    if (!info.ok) throw new Error('Telegram menolak permintaan file struk.');
-    const bytes = await downloadFile(info.data.result.file_path);
-    const base64 = Buffer.from(bytes).toString('base64');
-    const vision = await readReceiptImage(base64, message.document?.mime_type || 'image/jpeg');
+    // Pekerjaan berat (unduh foto + Gemini) dijalankan di function background
+    // supaya webhook tetap membalas jauh di bawah batas waktu Netlify.
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-scan-token': process.env.TELEGRAM_WEBHOOK_SECRET || '',
+      },
+      body: JSON.stringify({
+        chatId,
+        fileId,
+        mimeType: message.document?.mime_type || 'image/jpeg',
+        ackId,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    status = response.status;
 
-    const amount = Math.round(Number(vision.total) || 0);
-    if (!amount || amount < 100) {
-      await editAck('Nominal tidak terbaca dari foto itu. Coba foto ulang lebih dekat dan pastikan baris TOTAL terlihat.');
-      return;
+    if (!response.ok && response.status !== 202) {
+      throw new Error(`background gagal (${response.status})`);
     }
-
-    const date = isValidISODate(vision.date) ? vision.date : todayISO();
-    const merchant = vision.merchant || '';
-    const detail = [merchant, vision.note].filter(Boolean).join(' - ').slice(0, 120) || 'Struk belanja';
-    const category = guessCategory('out', `${merchant} ${vision.note}`);
-
-    let confidence = 0.6;
-    if (merchant) confidence += 0.2;
-    if (isValidISODate(vision.date)) confidence += 0.2;
-
-    const id = crypto.randomUUID();
-    const pending = {
-      id,
-      chatId: String(chatId),
-      amount,
-      date,
-      merchant,
-      note: detail,
-      category,
-      confidence: Math.round(confidence * 100) / 100,
-      createdAt: new Date().toISOString(),
-    };
-    await store.setJSON(`scan/pending-${id}`, pending);
-    await noteScan(store);
-
-    await editAck(receiptText(pending), { reply_markup: scanKeyboard(id) });
   } catch (error) {
-    console.error('Scan struk gagal', error);
-    const message2 = /quota|kuota|429/i.test(String(error.message))
-      ? 'Kuota pembacaan struk sedang penuh. Coba lagi beberapa saat lagi.'
-      : 'Gagal membaca struk. Coba kirim ulang fotonya.';
-    await editAck(message2);
+    console.error('Gagal menjadwalkan scan struk', error);
+    const text = 'Gagal memulai pembacaan struk. Coba kirim ulang fotonya.';
+    if (ackId) await editMessageText(chatId, ackId, text);
+    else await sendMessage(chatId, text);
   }
-}
-
-async function handleReport(store, chatId, args) {
-  const parts = args.filter(Boolean);
-  let targetMonth = null;
-  let targetYear = null;
-
-  if (parts.length === 0) {
-    targetMonth = monthOf(todayISO());
-  } else if (parts.length === 1) {
-    const value = parts[0];
-    if (/^\d{4}$/.test(value)) {
-      targetYear = Number(value);
-    } else if (/^\d{4}-\d{2}$/.test(value)) {
-      targetMonth = value;
-    } else if (/^\d{1,2}$/.test(value)) {
-      targetYear = Number(todayISO().slice(0, 4));
-      targetMonth = `${targetYear}-${value.padStart(2, '0')}`;
-    } else {
-      await sendMessage(chatId, 'Format laporan: /laporan, /laporan 10, /laporan 10 2026, /laporan 2026');
-      return;
-    }
-  } else {
-    const [monthToken, yearToken] = parts;
-    if (!/^\d{1,2}$/.test(monthToken) || !/^\d{4}$/.test(yearToken)) {
-      await sendMessage(chatId, 'Format laporan: /laporan 10 2026');
-      return;
-    }
-    targetMonth = `${yearToken}-${monthToken.padStart(2, '0')}`;
-    targetYear = Number(yearToken);
-  }
-
-  if (targetMonth) {
-    if (!isValidMonth(targetMonth)) {
-      await sendMessage(chatId, 'Bulan tidak valid. Gunakan 1-12.');
-      return;
-    }
-    const items = await readMonth(store, targetMonth);
-    await sendMessage(chatId, monthReportText(items, targetMonth));
-    return;
-  }
-
-  if (!isValidYear(targetYear)) {
-    await sendMessage(chatId, 'Tahun tidak valid.');
-    return;
-  }
-  const yearMonths = monthsOfYear(targetYear);
-  const map = await readMonths(store, yearMonths);
-  const items = flatten(map);
-  await sendMessage(chatId, yearReportText(items, targetYear));
-}
-
-async function handleText(store, message) {
-  const chatId = message.chat.id;
-  const text = String(message.text || '').trim();
-  if (!text.startsWith('/')) {
-    await sendMessage(chatId, 'Gunakan perintah. Ketik /help untuk daftar perintah.');
-    return;
-  }
-
-  const firstSpace = text.search(/\s/);
-  const rawCommand = (firstSpace < 0 ? text : text.slice(0, firstSpace)).toLowerCase();
-  const args = firstSpace < 0 ? '' : text.slice(firstSpace + 1).trim();
-  const command = rawCommand.split('@')[0];
-
-  if (command === '/start' || command === '/help') {
-    const suffix = allowedChats().length
-      ? ''
-      : `\n\nChat ID kamu: <code>${chatId}</code>\nSimpan nilai ini di environment variable TELEGRAM_ALLOWED_CHAT_ID agar bot hanya bisa dipakai olehmu.`;
-    await sendMessage(chatId, `${HELP_TEXT}${suffix}`);
-    return;
-  }
-
-  if (command === '/masuk' || command === '/in' || command === '/terima') {
-    const parsed = parseEntry(args);
-    if (parsed.error) {
-      await sendMessage(chatId, parsed.error);
-      return;
-    }
-    const now = new Date().toISOString();
-    const tx = {
-      id: crypto.randomUUID(),
-      type: 'in',
-      amount: parsed.amount,
-      note: parsed.note,
-      category: parsed.category || guessCategory('in', parsed.note),
-      date: parsed.date || todayISO(),
-      source: 'telegram',
-      chatId: String(chatId),
-      createdAt: now,
-      updatedAt: now,
-    };
-    await addTransaction(store, tx);
-    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
-    return;
-  }
-
-  if (command === '/keluar' || command === '/out') {
-    const parsed = parseEntry(args);
-    if (parsed.error) {
-      await sendMessage(chatId, parsed.error);
-      return;
-    }
-    const now = new Date().toISOString();
-    const tx = {
-      id: crypto.randomUUID(),
-      type: 'out',
-      amount: parsed.amount,
-      note: parsed.note,
-      category: parsed.category || guessCategory('out', parsed.note),
-      date: parsed.date || todayISO(),
-      source: 'telegram',
-      chatId: String(chatId),
-      createdAt: now,
-      updatedAt: now,
-    };
-    await addTransaction(store, tx);
-    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
-    return;
-  }
-
-  if (command === '/scan' || command === '/struk') {
-    await sendMessage(
-      chatId,
-      hasVision()
-        ? 'Kirim foto struk belanja (sebagai foto, bukan file). Bot akan membaca nominal, tanggal, dan tokonya, lalu menawarkan tombol Simpan.'
-        : 'Scan struk belum aktif: <code>GEMINI_API_KEY</code> belum diisi di environment variable Netlify.',
-    );
-    return;
-  }
-
-  if (command === '/saldo') {
-    const { all } = await allData(store);
-    const ym = monthOf(todayISO());
-    const monthItems = await readMonth(store, ym);
-    const monthSum = totals(monthItems);
-    await sendMessage(chatId, balanceText({ balance: all.net }, monthSum, ym));
-    return;
-  }
-
-  if (command === '/laporan' || command === '/report') {
-    await handleReport(store, chatId, args.split(/\s+/).filter(Boolean));
-    return;
-  }
-
-  if (command === '/tahun') {
-    const year = args && /^\d{4}$/.test(args) ? Number(args) : Number(todayISO().slice(0, 4));
-    const map = await readMonths(store, monthsOfYear(year));
-    await sendMessage(chatId, yearReportText(flatten(map), year));
-    return;
-  }
-
-  if (command === '/undo') {
-    const months = await listMonths(store);
-    const recent = months.slice(0, 6);
-    const latest = await latestTransaction(store, recent);
-    if (!latest) {
-      await sendMessage(chatId, 'Tidak ada transaksi untuk dibatalkan.');
-      return;
-    }
-    await removeTransaction(store, latest.ym, latest.tx.id);
-    const label = latest.tx.type === 'in' ? 'Pemasukan' : 'Pengeluaran';
-    await sendMessage(
-      chatId,
-      `Dibatalkan.\n${label} ${shortDate(latest.tx.date)}\n${latest.tx.note || latest.tx.category}`,
-    );
-    return;
-  }
-
-  if (command === '/kategori') {
-    await sendMessage(
-      chatId,
-      `<b>Kategori pengeluaran</b>\n${CATEGORIES.out.join(', ')}\n\n<b>Kategori pemasukan</b>\n${CATEGORIES.in.join(', ')}`,
-    );
-    return;
-  }
-
-  await sendMessage(chatId, 'Perintah tidak dikenal. Ketik /help.');
 }
 
 async function handleCallback(store, query) {
@@ -480,7 +269,7 @@ export default async (request) => {
       if (!isAllowed(message.chat.id)) {
         await sendMessage(message.chat.id, 'Bot ini privat. Hubungi pemilik untuk mendapatkan akses.');
       } else if (isImageMessage(message)) {
-        await handleReceipt(store, message);
+        await handleReceipt(store, message, request.url);
       } else {
         await handleText(store, message);
       }

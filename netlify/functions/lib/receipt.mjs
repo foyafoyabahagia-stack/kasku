@@ -151,6 +151,13 @@ function findMerchant(lines) {
   return '';
 }
 
+/** Tanggal dari model bisa ISO, dd/mm/yyyy, atau nama bulan; samakan ke ISO. */
+export function normalizeReceiptDate(value, fallback = todayISO()) {
+  const text = String(value || '').trim();
+  if (isValidISODate(text)) return text;
+  return parseDateFromText(text) || fallback;
+}
+
 /**
  * @param {string} rawText teks hasil OCR
  * @param {{today?: string}} [options]

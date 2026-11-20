@@ -135,6 +135,8 @@ export default async (request) => {
       return json({
         ok: true,
         configured: Boolean(process.env.APP_PASSWORD),
+        vision: Boolean(process.env.GEMINI_API_KEY),
+        visionModel: process.env.GEMINI_MODEL || 'gemini-flash-lite-latest',
         timezone: process.env.TZ || 'Asia/Jakarta',
         now: new Date().toISOString(),
       });

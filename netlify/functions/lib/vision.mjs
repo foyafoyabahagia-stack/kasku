@@ -7,8 +7,11 @@ export function hasVision() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
-export function visionModel() {
-  return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+/** Daftar model yang dicoba berurutan (model preview bisa dipensiunkan Google kapan saja). */
+export function visionModels() {
+  const configured = String(process.env.GEMINI_MODEL || '').split(',').map((item) => item.trim()).filter(Boolean);
+  const models = configured.length ? configured : ['gemini-flash-lite-latest'];
+  return [...new Set([...models, 'gemini-3-flash-preview', 'gemini-flash-latest'])];
 }
 
 const PROMPT = `Kamu membaca foto struk belanja Indonesia. Kembalikan JSON dengan field:
@@ -41,7 +44,6 @@ export async function readReceiptImage(base64, mimeType = 'image/jpeg') {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY belum diset');
 
-  const model = visionModel();
   const body = {
     contents: [{
       role: 'user',
@@ -57,19 +59,29 @@ export async function readReceiptImage(base64, mimeType = 'image/jpeg') {
     },
   };
 
-  const response = await fetch(`${ENDPOINT}/${model}:generateContent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(25_000),
-  });
+  let response = null;
+  let data = null;
 
-  const data = await response.json().catch(() => null);
+  for (const model of visionModels()) {
+    response = await fetch(`${ENDPOINT}/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(25_000),
+    });
+    data = await response.json().catch(() => null);
 
-  if (!response.ok) {
-    const message = data?.error?.message || `Gemini menolak permintaan (${response.status})`;
+    if (response.ok) break;
+
+    const message = String(data?.error?.message || '');
+    const retired = response.status === 404 || /no longer available|not found|unsupported/i.test(message);
+    if (!retired) break;
+  }
+
+  if (!response || !response.ok) {
+    const message = data?.error?.message || `Gemini menolak permintaan (${response?.status})`;
     const error = new Error(message);
-    error.status = response.status;
+    error.status = response?.status;
     throw error;
   }
 
