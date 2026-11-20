@@ -51,3 +51,55 @@ export function parseEntry(rest) {
     category: category.slice(0, 40),
   };
 }
+
+// Kata yang menandakan arah transaksi pada kalimat bebas.
+const INCOME_WORDS = new Set([
+  'masuk', 'masukin', 'pemasukan', 'terima', 'diterima', 'dapat', 'cair',
+  'income', 'in', 'pendapatan', 'gaji', 'bonus', 'thr', 'komisi', 'refund',
+]);
+
+const EXPENSE_WORDS = new Set([
+  'keluar', 'keluarin', 'pengeluaran', 'out', 'belanja', 'beli', 'bayar',
+  'bayarin', 'jajan', 'makan', 'minum', 'kopi', 'bensin', 'parkir', 'topup',
+  'isi', 'transfer', 'donasi', 'sedekah',
+]);
+
+// Kata yang dibuang dari keterangan karena hanya penanda arah.
+const STRIP_WORDS = new Set(['masuk', 'masukin', 'pemasukan', 'keluar', 'keluarin', 'pengeluaran']);
+
+/**
+ * Kalimat bebas tanpa perintah, contoh:
+ * "masuk gaji 50k"  -> { type: 'in',  amount: 50000, note: 'gaji' }
+ * "kopi 25rb"       -> { type: 'out', amount: 25000, note: 'kopi' }
+ */
+export function parseNatural(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return { error: 'Belum ada isinya. Contoh: kopi 25rb atau masuk gaji 5jt.' };
+
+  const words = raw.split(/\s+/);
+  const first = words[0].toLowerCase();
+  const pair = words.slice(0, 2).join(' ').toLowerCase();
+
+  let type = 'out';
+  let explicit = false;
+  let rest = raw;
+
+  if (pair === 'uang masuk' || pair === 'uang keluar') {
+    type = pair === 'uang masuk' ? 'in' : 'out';
+    explicit = true;
+    rest = words.slice(2).join(' ');
+  } else if (INCOME_WORDS.has(first)) {
+    type = 'in';
+    explicit = true;
+    if (STRIP_WORDS.has(first)) rest = words.slice(1).join(' ');
+  } else if (EXPENSE_WORDS.has(first)) {
+    explicit = true;
+    if (STRIP_WORDS.has(first)) rest = words.slice(1).join(' ');
+  }
+
+  const parsed = parseEntry(rest);
+  if (parsed.error) {
+    return { error: 'Nominalnya belum ada. Contoh: kopi 25rb, bensin 50rb, masuk gaji 5jt.' };
+  }
+  return { ...parsed, type, explicit };
+}

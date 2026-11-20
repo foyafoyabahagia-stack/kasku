@@ -173,6 +173,8 @@ Buka `https://SITUS-ANDA.netlify.app` → masukkan `APP_PASSWORD`.
 
 | Perintah | Contoh | Keterangan |
 | --- | --- | --- |
+| Kalimat bebas | `kopi 25rb` | Langsung dicatat sebagai pengeluaran |
+| Kalimat bebas | `masuk gaji 5jt` | Awalan `masuk`/`terima`/`gaji` membuatnya pemasukan |
 | `/keluar` | `/keluar 35000 makan siang` | Catat pengeluaran |
 | `/masuk` | `/masuk 8500000 gaji november` | Catat pemasukan |
 | Tanggal | `/keluar 35rb kopi 18/11` | Tanggal opsional: `18/11`, `18-11-2026`, `2026-11-18` |
@@ -190,6 +192,11 @@ Buka `https://SITUS-ANDA.netlify.app` → masukkan `APP_PASSWORD`.
 | `/help` | `/help` | Bantuan |
 
 Nominal menerima `35000`, `35.000`, `35rb`, `35k`, `1,5jt`, `2 juta`, `Rp 35.000`.
+
+Tanda arah pada kalimat bebas: `masuk`, `masukin`, `terima`, `dapat`, `cair`, `gaji`, `bonus`,
+`thr`, `komisi` untuk pemasukan; `keluar`, `beli`, `bayar`, `belanja`, `jajan`, `makan`,
+`minum`, `kopi`, `bensin`, `parkir`, `topup` untuk pengeluaran. Bila tidak ada tanda apa pun,
+transaksi dianggap pengeluaran dan bot menampilkan pengingat singkat.
 
 ---
 

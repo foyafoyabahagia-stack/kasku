@@ -7,7 +7,7 @@ import {
 } from '../netlify/functions/lib/dates.mjs';
 import { guessCategory } from '../netlify/functions/lib/categories.mjs';
 import { totals, byCategory, dailySeries, monthlySeries } from '../netlify/functions/lib/analytics.mjs';
-import { parseEntry } from '../netlify/functions/lib/entry.mjs';
+import { parseEntry, parseNatural } from '../netlify/functions/lib/entry.mjs';
 import { monthReportText, yearReportText, transactionText, receiptText } from '../netlify/functions/lib/report.mjs';
 import { parseReceiptText, parseAmountToken } from '../netlify/functions/lib/receipt.mjs';
 
@@ -200,6 +200,36 @@ const receiptMessage = receiptText({
 });
 check('teks scan memuat total', receiptMessage.includes('45.500'), receiptMessage);
 check('teks scan memuat tombol simpan', receiptMessage.includes('Simpan'), receiptMessage);
+
+/* ---------- Kalimat bebas (tanpa perintah) ---------- */
+const naturalIncome = parseNatural('masuk gaji 50k');
+eq('bebas: masuk gaji 50k nominal', naturalIncome.amount, 50000);
+eq('bebas: masuk gaji 50k arah', naturalIncome.type, 'in');
+eq('bebas: kata masuk dibuang dari keterangan', naturalIncome.note, 'gaji');
+
+const naturalCoffee = parseNatural('kopi 25rb');
+eq('bebas: kopi 25rb nominal', naturalCoffee.amount, 25000);
+eq('bebas: kopi 25rb arah', naturalCoffee.type, 'out');
+check('bebas: kopi dikenali sebagai pengeluaran', naturalCoffee.explicit === true);
+
+const naturalAngkaSaja = parseNatural('25000');
+eq('bebas: angka saja jadi pengeluaran', naturalAngkaSaja.type, 'out');
+check('bebas: angka saja tanpa kata kunci', naturalAngkaSaja.explicit === false);
+
+const naturalGaji = parseNatural('gaji 5jt');
+eq('bebas: gaji otomatis pemasukan', naturalGaji.type, 'in');
+
+const naturalBelanja = parseNatural('beli bensin 50rb 18/11');
+eq('bebas: beli bensin nominal', naturalBelanja.amount, 50000);
+eq('bebas: beli bensin arah', naturalBelanja.type, 'out');
+eq('bebas: tanggal ikut terbaca', naturalBelanja.date, '2026-11-18');
+
+const naturalUangMasuk = parseNatural('uang masuk jualan 75000');
+eq('bebas: uang masuk jadi pemasukan', naturalUangMasuk.type, 'in');
+eq('bebas: uang masuk nominal', naturalUangMasuk.amount, 75000);
+
+const naturalTanpaNominal = parseNatural('makan siang tadi');
+check('bebas: tanpa nominal ditolak', /Nominalnya belum ada/.test(naturalTanpaNominal.error || ''));
 
 /* ---------- Hasil ---------- */
 if (failures.length) {

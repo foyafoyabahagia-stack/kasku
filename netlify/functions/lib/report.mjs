@@ -99,6 +99,11 @@ export function receiptText(result) {
 export const HELP_TEXT = [
   '<b>KasKu - bot keuangan</b>',
   '',
+  'Tanpa perintah juga bisa:',
+  'kopi 25rb  -> pengeluaran',
+  'masuk gaji 5jt  -> pemasukan',
+  'beli bensin 50rb 18/11  -> pengeluaran bertanggal',
+  '',
   'Perintah yang tersedia:',
   '/masuk 500000 gaji november',
   '/keluar 35000 makan siang',

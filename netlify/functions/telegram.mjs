@@ -6,7 +6,7 @@ import {
   listMonths, latestTransaction,
 } from './lib/store.mjs';
 import { todayISO, monthOf, isValidMonth, isValidYear, monthsOfYear, shortDate } from './lib/dates.mjs';
-import { parseEntry } from './lib/entry.mjs';
+import { parseEntry, parseNatural } from './lib/entry.mjs';
 import { guessCategory, CATEGORIES } from './lib/categories.mjs';
 import { totals, flatten } from './lib/analytics.mjs';
 import {
@@ -63,6 +63,23 @@ function bestPhotoFileId(message) {
     return message.photo[message.photo.length - 1].file_id;
   }
   return message.document?.file_id || '';
+}
+
+async function noteChat(store, message) {
+  try {
+    const chatId = String(message.chat?.id || '');
+    if (!chatId) return;
+    const from = message.from || {};
+    const name = [from.first_name, from.last_name].filter(Boolean).join(' ') || from.username || '';
+    await store.setJSON(`telegram/chats-${chatId}`, {
+      chatId,
+      name: String(name).slice(0, 80),
+      username: from.username || '',
+      at: new Date().toISOString(),
+    });
+  } catch {
+    // pencatatan akun bersifat opsional
+  }
 }
 
 async function handleReceipt(store, message, requestUrl) {
@@ -172,11 +189,42 @@ async function handleReport(store, chatId, args) {
   await sendMessage(chatId, yearReportText(items, targetYear));
 }
 
+async function recordTransaction(store, chatId, type, parsed) {
+  const now = new Date().toISOString();
+  const tx = {
+    id: crypto.randomUUID(),
+    type,
+    amount: parsed.amount,
+    note: parsed.note,
+    category: parsed.category || guessCategory(type, parsed.note),
+    date: parsed.date || todayISO(),
+    source: 'telegram',
+    chatId: String(chatId),
+    createdAt: now,
+    updatedAt: now,
+  };
+  await addTransaction(store, tx);
+  return tx;
+}
+
 async function handleText(store, message) {
   const chatId = message.chat.id;
   const text = String(message.text || '').trim();
+
+  // Kalimat bebas tanpa garis miring: "kopi 25rb", "masuk gaji 5jt".
   if (!text.startsWith('/')) {
-    await sendMessage(chatId, 'Gunakan perintah. Ketik /help untuk daftar perintah.');
+    const parsed = parseNatural(text);
+    if (parsed.error) {
+      await sendMessage(chatId, parsed.error);
+      return;
+    }
+    const tx = await recordTransaction(store, chatId, parsed.type, parsed);
+    const hint = parsed.explicit
+      ? ''
+      : '\n\n<i>Dicatat sebagai pengeluaran. Untuk pemasukan, tulis "masuk ...".</i>';
+    await sendMessage(chatId, `${transactionText(tx)}${hint}`, {
+      reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id),
+    });
     return;
   }
 
@@ -199,20 +247,7 @@ async function handleText(store, message) {
       await sendMessage(chatId, parsed.error);
       return;
     }
-    const now = new Date().toISOString();
-    const tx = {
-      id: crypto.randomUUID(),
-      type: 'in',
-      amount: parsed.amount,
-      note: parsed.note,
-      category: parsed.category || guessCategory('in', parsed.note),
-      date: parsed.date || todayISO(),
-      source: 'telegram',
-      chatId: String(chatId),
-      createdAt: now,
-      updatedAt: now,
-    };
-    await addTransaction(store, tx);
+    const tx = await recordTransaction(store, chatId, 'in', parsed);
     await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
     return;
   }
@@ -223,20 +258,7 @@ async function handleText(store, message) {
       await sendMessage(chatId, parsed.error);
       return;
     }
-    const now = new Date().toISOString();
-    const tx = {
-      id: crypto.randomUUID(),
-      type: 'out',
-      amount: parsed.amount,
-      note: parsed.note,
-      category: parsed.category || guessCategory('out', parsed.note),
-      date: parsed.date || todayISO(),
-      source: 'telegram',
-      chatId: String(chatId),
-      createdAt: now,
-      updatedAt: now,
-    };
-    await addTransaction(store, tx);
+    const tx = await recordTransaction(store, chatId, 'out', parsed);
     await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
     return;
   }
@@ -444,6 +466,7 @@ export default async (request) => {
       }
     } else if (update.message && !update.message.from?.is_bot) {
       const message = update.message;
+      await noteChat(store, message);
       if (!isAllowed(message.chat.id)) {
         await sendMessage(message.chat.id, 'Bot ini privat. Hubungi pemilik untuk mendapatkan akses.');
       } else if (isImageMessage(message)) {
