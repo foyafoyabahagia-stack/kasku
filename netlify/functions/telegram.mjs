@@ -5,16 +5,18 @@ import {
   openStore, readMonth, readMonths, addTransaction, removeTransaction,
   listMonths, latestTransaction,
 } from './lib/store.mjs';
-import { todayISO, monthOf, isValidMonth, isValidYear, monthsOfYear, shortDate } from './lib/dates.mjs';
+import { todayISO, monthOf, isValidMonth, isValidYear, monthsOfYear, shortDate, isValidISODate } from './lib/dates.mjs';
 import { parseEntry } from './lib/entry.mjs';
-import { guessCategory, CATEGORIES } from './lib/categories.mjs';
+import { guessCategory, CATEGORIES, sanitizeCategory } from './lib/categories.mjs';
 import { totals, flatten } from './lib/analytics.mjs';
 import {
   sendMessage, editMessageText, answerCallbackQuery, escapeHtml, hasBotToken,
+  getFile, downloadFile,
 } from './lib/telegram-api.mjs';
 import {
-  HELP_TEXT, transactionText, monthReportText, yearReportText, balanceText,
+  HELP_TEXT, transactionText, monthReportText, yearReportText, balanceText, receiptText,
 } from './lib/report.mjs';
+import { hasVision, readReceiptImage } from './lib/vision.mjs';
 
 function allowedChats() {
   return String(process.env.TELEGRAM_ALLOWED_CHAT_ID || '')
@@ -37,6 +39,120 @@ async function allData(store) {
 
 function keyboardForDeletion(ym, id) {
   return { inline_keyboard: [[{ text: 'Hapus transaksi ini', callback_data: `del:${ym}:${id}` }]] };
+}
+
+/* ---------- Scan struk ---------- */
+
+function scanLimit() {
+  const value = Number(process.env.RECEIPT_DAILY_LIMIT);
+  return Number.isFinite(value) && value > 0 ? value : 20;
+}
+
+async function scanUsage(store) {
+  const doc = await store.get(`scan/usage-${todayISO()}`, { type: 'json' });
+  return Number(doc?.count) || 0;
+}
+
+async function noteScan(store) {
+  const key = `scan/usage-${todayISO()}`;
+  const doc = (await store.get(key, { type: 'json' })) || {};
+  await store.setJSON(key, { count: (Number(doc.count) || 0) + 1, updatedAt: new Date().toISOString() });
+}
+
+function isImageMessage(message) {
+  if (Array.isArray(message.photo) && message.photo.length) return true;
+  const mime = String(message.document?.mime_type || '');
+  return Boolean(message.document) && mime.startsWith('image/');
+}
+
+function bestPhotoFileId(message) {
+  if (Array.isArray(message.photo) && message.photo.length) {
+    return message.photo[message.photo.length - 1].file_id;
+  }
+  return message.document?.file_id || '';
+}
+
+function scanKeyboard(id) {
+  return {
+    inline_keyboard: [[
+      { text: 'Simpan', callback_data: `rcpt:save:${id}` },
+      { text: 'Batal', callback_data: `rcpt:cancel:${id}` },
+    ]],
+  };
+}
+
+async function handleReceipt(store, message) {
+  const chatId = message.chat.id;
+
+  if (!hasVision()) {
+    await sendMessage(
+      chatId,
+      'Scan struk belum aktif: <code>GEMINI_API_KEY</code> belum diisi di environment variable Netlify.',
+    );
+    return;
+  }
+
+  const limit = scanLimit();
+  if ((await scanUsage(store)) >= limit) {
+    await sendMessage(chatId, `Batas scan hari ini tercapai (${limit} foto). Coba lagi besok.`);
+    return;
+  }
+
+  const ack = await sendMessage(chatId, 'Membaca struk…');
+  const ackId = ack.ok ? ack.data?.result?.message_id : null;
+  const editAck = async (text, options = {}) => {
+    if (ackId) await editMessageText(chatId, ackId, text, options);
+    else await sendMessage(chatId, text, options);
+  };
+
+  try {
+    const fileId = bestPhotoFileId(message);
+    if (!fileId) throw new Error('Foto tidak ditemukan pada pesan.');
+
+    const info = await getFile(fileId);
+    if (!info.ok) throw new Error('Telegram menolak permintaan file struk.');
+    const bytes = await downloadFile(info.data.result.file_path);
+    const base64 = Buffer.from(bytes).toString('base64');
+    const vision = await readReceiptImage(base64, message.document?.mime_type || 'image/jpeg');
+
+    const amount = Math.round(Number(vision.total) || 0);
+    if (!amount || amount < 100) {
+      await editAck('Nominal tidak terbaca dari foto itu. Coba foto ulang lebih dekat dan pastikan baris TOTAL terlihat.');
+      return;
+    }
+
+    const date = isValidISODate(vision.date) ? vision.date : todayISO();
+    const merchant = vision.merchant || '';
+    const detail = [merchant, vision.note].filter(Boolean).join(' - ').slice(0, 120) || 'Struk belanja';
+    const category = guessCategory('out', `${merchant} ${vision.note}`);
+
+    let confidence = 0.6;
+    if (merchant) confidence += 0.2;
+    if (isValidISODate(vision.date)) confidence += 0.2;
+
+    const id = crypto.randomUUID();
+    const pending = {
+      id,
+      chatId: String(chatId),
+      amount,
+      date,
+      merchant,
+      note: detail,
+      category,
+      confidence: Math.round(confidence * 100) / 100,
+      createdAt: new Date().toISOString(),
+    };
+    await store.setJSON(`scan/pending-${id}`, pending);
+    await noteScan(store);
+
+    await editAck(receiptText(pending), { reply_markup: scanKeyboard(id) });
+  } catch (error) {
+    console.error('Scan struk gagal', error);
+    const message2 = /quota|kuota|429/i.test(String(error.message))
+      ? 'Kuota pembacaan struk sedang penuh. Coba lagi beberapa saat lagi.'
+      : 'Gagal membaca struk. Coba kirim ulang fotonya.';
+    await editAck(message2);
+  }
 }
 
 async function handleReport(store, chatId, args) {
@@ -158,6 +274,16 @@ async function handleText(store, message) {
     return;
   }
 
+  if (command === '/scan' || command === '/struk') {
+    await sendMessage(
+      chatId,
+      hasVision()
+        ? 'Kirim foto struk belanja (sebagai foto, bukan file). Bot akan membaca nominal, tanggal, dan tokonya, lalu menawarkan tombol Simpan.'
+        : 'Scan struk belum aktif: <code>GEMINI_API_KEY</code> belum diisi di environment variable Netlify.',
+    );
+    return;
+  }
+
   if (command === '/saldo') {
     const { all } = await allData(store);
     const ym = monthOf(todayISO());
@@ -212,6 +338,11 @@ async function handleCallback(store, query) {
   const messageId = query.message?.message_id;
   const data = String(query.data || '');
 
+  if (data.startsWith('rcpt:')) {
+    await handleReceiptCallback(store, query, chatId, messageId, data);
+    return;
+  }
+
   if (!data.startsWith('del:')) {
     await answerCallbackQuery(query.id);
     return;
@@ -236,6 +367,69 @@ async function handleCallback(store, query) {
       chatId,
       messageId,
       `<s>${escapeHtml(label)} ${escapeHtml(shortDate(removed.date))} - ${escapeHtml(removed.note || removed.category)}</s>\n\nTransaksi dihapus.`,
+    );
+  }
+}
+
+async function handleReceiptCallback(store, query, chatId, messageId, data) {
+  const [, action, id] = data.split(':');
+  const key = `scan/pending-${id}`;
+  const pending = id ? await store.get(key, { type: 'json' }) : null;
+
+  if (!pending) {
+    await answerCallbackQuery(query.id, { text: 'Scan ini sudah kedaluwarsa.' });
+    return;
+  }
+  if (String(pending.chatId) !== String(chatId)) {
+    await answerCallbackQuery(query.id, { text: 'Scan ini bukan milikmu.' });
+    return;
+  }
+
+  const age = Date.now() - new Date(pending.createdAt).getTime();
+  if (!Number.isFinite(age) || age > 60 * 60 * 1000) {
+    await store.delete(key);
+    await answerCallbackQuery(query.id, { text: 'Scan kedaluwarsa, kirim ulang fotonya.' });
+    return;
+  }
+
+  if (action === 'cancel') {
+    await store.delete(key);
+    await answerCallbackQuery(query.id, { text: 'Dibatalkan.' });
+    if (chatId && messageId) {
+      await editMessageText(chatId, messageId, '<s>Scan struk dibatalkan.</s>');
+    }
+    return;
+  }
+
+  if (action !== 'save') {
+    await answerCallbackQuery(query.id);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const tx = {
+    id: crypto.randomUUID(),
+    type: 'out',
+    amount: pending.amount,
+    note: pending.note,
+    category: pending.category,
+    date: pending.date,
+    source: 'scan',
+    chatId: String(chatId),
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await addTransaction(store, tx);
+  await store.delete(key);
+  await answerCallbackQuery(query.id, { text: 'Tersimpan.' });
+
+  if (chatId && messageId) {
+    await editMessageText(
+      chatId,
+      messageId,
+      `${transactionText(tx)}\n\n<i>Tersimpan dari scan struk.</i>`,
+      { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) },
     );
   }
 }
@@ -285,6 +479,8 @@ export default async (request) => {
       const message = update.message;
       if (!isAllowed(message.chat.id)) {
         await sendMessage(message.chat.id, 'Bot ini privat. Hubungi pemilik untuk mendapatkan akses.');
+      } else if (isImageMessage(message)) {
+        await handleReceipt(store, message);
       } else {
         await handleText(store, message);
       }

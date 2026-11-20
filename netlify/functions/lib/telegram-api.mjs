@@ -48,6 +48,19 @@ export function answerCallbackQuery(callbackQueryId, payload = {}) {
   return call('answerCallbackQuery', { callback_query_id: callbackQueryId, ...payload });
 }
 
+export function getFile(fileId) {
+  return call('getFile', { file_id: fileId });
+}
+
+/** Unduh isi file (foto struk) dari server Telegram. */
+export async function downloadFile(filePath) {
+  const response = await fetch(`${API}/file/bot${token()}/${filePath}`, {
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`Gagal mengunduh file Telegram (${response.status})`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 export function setWebhook(url, secretToken) {
   return call('setWebhook', {
     url,

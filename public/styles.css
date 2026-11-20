@@ -454,5 +454,25 @@ tr:hover .row-actions, .row-actions:focus-within { opacity: 1; }
   .tx-note { overflow-wrap: anywhere; }
   .donut { justify-content: center; }
   .donut-legend { flex-basis: 100%; }
-  .top-actions .btn.ghost { display: none; }
+  #btn-export { display: none; }
+  .top-actions .btn-label { display: none; }
+}
+
+/* ---------- Scan struk ---------- */
+.scan-card { max-width: 400px; text-align: center; }
+.scan-card h2 { font-size: 17px; margin: 0 0 6px; }
+.scan-card .hint { margin: 14px 0 16px; font-size: 12px; line-height: 1.5; }
+.scan-bar {
+  height: 8px; border-radius: 999px; background: var(--bg-soft);
+  overflow: hidden; margin-top: 14px;
+}
+.scan-bar i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--in));
+  transition: width .25s ease;
+}
+.scan-hint {
+  margin: 0 0 14px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--accent-soft); color: var(--accent-strong);
+  font-size: 12.5px; line-height: 1.45;
 }

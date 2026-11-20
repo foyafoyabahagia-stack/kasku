@@ -79,6 +79,23 @@ export function balanceText(allTime, todayTx, ym) {
   return rows.join('\n');
 }
 
+export function receiptText(result) {
+  const confidence = Math.round((Number(result.confidence) || 0) * 100);
+  const rows = [
+    '<b>Hasil scan struk</b>',
+    LINE,
+    result.merchant ? `Toko      ${escapeHtml(result.merchant)}` : null,
+    result.note ? `Isi       ${escapeHtml(result.note)}` : null,
+    `Total     <b>${formatIDR(result.amount)}</b>`,
+    `Tanggal   ${shortDate(result.date)}`,
+    `Kategori  ${escapeHtml(result.category)}`,
+    `Keyakinan ${confidence}%`,
+    '',
+    'Periksa dulu. Tekan <b>Simpan</b> kalau sudah benar.',
+  ];
+  return rows.filter((row) => row !== null).join('\n');
+}
+
 export const HELP_TEXT = [
   '<b>KasKu - bot keuangan</b>',
   '',
@@ -93,6 +110,8 @@ export const HELP_TEXT = [
   '/laporan 2026',
   '/tahun',
   '/undo',
+  '',
+  'Scan struk: kirim foto struk, bot membaca nominalnya lalu menawarkan tombol Simpan.',
   '',
   'Catatan:',
   '- Nominal bisa ditulis 35000, 35rb, 35k, 1,5jt.',

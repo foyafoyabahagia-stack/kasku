@@ -59,6 +59,10 @@
       </div>
 
       <div class="top-actions">
+        <button id="btn-scan" class="btn ghost" type="button" title="Baca nominal dari foto struk">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7V5.5A2.5 2.5 0 0 1 5.5 3H7M13 3h1.5A2.5 2.5 0 0 1 17 5.5V7M17 13v1.5A2.5 2.5 0 0 1 14.5 17H13M7 17H5.5A2.5 2.5 0 0 1 3 14.5V13M3 10h14" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+          <span class="btn-label">Scan struk</span>
+        </button>
         <button id="btn-add" class="btn primary" type="button">
           <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           Catat
@@ -156,6 +160,8 @@
       </header>
 
       <form id="tx-form" novalidate>
+        <p id="scan-hint" class="scan-hint" hidden></p>
+
         <div class="segmented" id="type-toggle" role="group" aria-label="Tipe transaksi">
           <button type="button" data-type="out" class="active">Pengeluaran</button>
           <button type="button" data-type="in">Pemasukan</button>
@@ -196,6 +202,18 @@
       </form>
     </div>
   </div>
+
+  <div id="scan-modal" class="modal" hidden>
+    <div class="modal-card scan-card" role="dialog" aria-modal="true" aria-labelledby="scan-title">
+      <h2 id="scan-title">Membaca struk…</h2>
+      <p id="scan-status" class="muted">Menyiapkan mesin OCR…</p>
+      <div class="scan-bar" aria-hidden="true"><i id="scan-bar-fill"></i></div>
+      <p class="hint">Foto dibaca di perangkat ini (Tesseract.js), tidak diunggah ke server. Hasilnya kamu periksa dulu sebelum disimpan.</p>
+      <button id="scan-cancel" class="btn ghost block" type="button">Batalkan</button>
+    </div>
+  </div>
+
+  <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 

@@ -15,6 +15,7 @@ import {
   monthsOfYear, prevMonth,
 } from './lib/dates.mjs';
 import { CATEGORIES, sanitizeCategory } from './lib/categories.mjs';
+import { parseReceiptText } from './lib/receipt.mjs';
 import { totals, byCategory, dailySeries, monthlySeries, flatten } from './lib/analytics.mjs';
 
 const JSON_HEADERS = {
@@ -179,6 +180,14 @@ export default async (request) => {
       if (!years.includes(currentYear)) years.push(currentYear);
       years.sort((a, b) => b - a);
       return json({ months, years, today: todayISO(), timezone: process.env.TZ || 'Asia/Jakarta' });
+    }
+
+    if (path === '/receipt/parse' && method === 'POST') {
+      const body = await readJson(request);
+      const text = String(body.text || '').slice(0, 8000);
+      if (!text.trim()) return badRequest('Teks struk kosong.');
+      const parsed = parseReceiptText(text);
+      return json(parsed);
     }
 
     if (path === '/summary') {

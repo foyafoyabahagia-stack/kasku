@@ -28,6 +28,12 @@ Aplikasi keuangan pribadi profesional yang berjalan **hanya di GitHub + Netlify*
 - Grafik arus kas harian (bulanan pada mode tahun)
 - Donat kategori pengeluaran + persentase
 
+**Scan struk**
+- Tombol **Scan struk** di dashboard: foto dibaca di perangkat (Tesseract.js), lalu form terisi otomatis
+- Kirim foto struk ke bot Telegram: nominal, tanggal, dan toko dibaca lewat Gemini, bot menawarkan tombol **Simpan**
+- Selalu ada langkah konfirmasi — tidak ada transaksi yang tersimpan tanpa kamu setujui
+- Batas harian scan di bot (`RECEIPT_DAILY_LIMIT`, bawaan 20) agar kuota API tidak jebol
+
 **Pencarian & ekspor**
 - Cari kata kunci, filter tipe & kategori, dibatasi periode terpilih
 - Export CSV per bulan (`kasku-2026-11.csv`) atau per tahun
@@ -80,8 +86,10 @@ kasku/
 │  └─ lib/                       # logika bersama (murni, mudah diuji)
 │     ├─ amount.mjs  dates.mjs  categories.mjs  analytics.mjs
 │     ├─ store.mjs   auth.mjs   report.mjs      telegram-api.mjs
+│     ├─ receipt.mjs             # parser teks struk (total, tanggal, toko)
+│     ├─ vision.mjs              # pembacaan foto struk via Gemini
 │     └─ entry.mjs
-└─ test/smoke.mjs                # 59 pemeriksaan logika tanpa dependensi
+└─ test/smoke.mjs                # 80 pemeriksaan logika tanpa dependensi
 ```
 
 ---
@@ -126,6 +134,9 @@ lalu **Deploy → Trigger deploy**.
 | `TELEGRAM_ALLOWED_CHAT_ID` | disarankan | Chat ID kamu; pisahkan koma bila lebih dari satu |
 | `SETUP_TOKEN` | ya (untuk setup) | Token rahasia untuk membuka `/setup` |
 | `TZ` | disarankan | `Asia/Jakarta` (menentukan "hari ini") |
+| `GEMINI_API_KEY` | opsional | Membaca foto struk yang dikirim ke bot Telegram |
+| `GEMINI_MODEL` | opsional | Bawaan `gemini-2.5-flash` |
+| `RECEIPT_DAILY_LIMIT` | opsional | Batas scan per hari per situs, bawaan `20` |
 
 Cara cepat membuat secret:
 
@@ -174,9 +185,36 @@ Buka `https://SITUS-ANDA.netlify.app` → masukkan `APP_PASSWORD`.
 | `/tahun` | `/tahun` | Rekap tahun berjalan |
 | `/undo` | `/undo` | Batalkan transaksi terakhir |
 | `/kategori` | `/kategori` | Daftar kategori |
+| Foto struk | kirim foto | Bot membaca struk lalu menawarkan tombol Simpan |
+| `/scan` | `/scan` | Petunjuk memakai fitur scan |
 | `/help` | `/help` | Bantuan |
 
 Nominal menerima `35000`, `35.000`, `35rb`, `35k`, `1,5jt`, `2 juta`, `Rp 35.000`.
+
+---
+
+## Scan struk
+
+Ada dua jalur, keduanya berakhir di form yang perlu kamu setujui sebelum disimpan.
+
+**Jalur web (tanpa API key).** Tombol **Scan struk** membuka kamera/galeri. Gambar dibaca
+di browser memakai Tesseract.js (diunduh dari CDN saat pertama dipakai), lalu teksnya dikirim
+ke `POST /api/receipt/parse` untuk diambil nominal, tanggal, toko, dan kategorinya. Fotonya
+tidak pernah diunggah ke server mana pun.
+
+**Jalur Telegram.** Kirim foto struk ke bot. Function `telegram` mengunduh foto dari Telegram,
+mengirimnya ke Gemini bersama instruksi ketat (total yang dibayar, bukan subtotal/kembalian),
+lalu membalas ringkasan dengan tombol **Simpan** / **Batal**. Data sementara disimpan 60 menit
+di Blobs; setelah disimpan atau dibatalkan, blob `scan/pending-*` dihapus.
+
+Yang perlu diketahui:
+
+- Gemini API punya free tier dengan kuota harian terbatas; `RECEIPT_DAILY_LIMIT` mencegah
+  pemakaian melebihi batas itu. Tanpa `GEMINI_API_KEY`, jalur bot hanya membalas pengingat
+  dan jalur web tetap berfungsi.
+- OCR tidak pernah 100%. Parser memilih baris TOTAL/GRAND TOTAL/JUMLAH BAYAR, mengabaikan
+  KEMBALI/TUNAI/DISKON, dan bila tidak ada baris total menghitung `bayar - kembalian`.
+- Foto struk pada jalur Telegram dikirim ke server Google. Kalau tidak ingin itu, pakai jalur web.
 
 ---
 
@@ -184,7 +222,7 @@ Nominal menerima `35000`, `35.000`, `35rb`, `35k`, `1,5jt`, `2 juta`, `Rp 35.000
 
 ```bash
 npm install
-npm test              # 59 pemeriksaan logika (tanpa dependensi)
+npm test              # 80 pemeriksaan logika (tanpa dependensi)
 npx netlify-cli dev   # dashboard + function + Blobs lokal
 ```
 
@@ -192,7 +230,8 @@ Saat `netlify dev` berjalan, buat `.env` dari `.env.example` (jangan di-commit).
 Jika Blobs lokal tidak tersedia di mesinmu, uji lewat **Deploy Preview**.
 
 Pengujian logika mencakup parsing nominal/tanggal, penebakan kategori,
-perhitungan laporan, input bot, dan format pesan.
+perhitungan laporan, input bot, format pesan, serta parser struk (total,
+kembalian, tanggal, merchant).
 
 ---
 
@@ -204,6 +243,8 @@ perhitungan laporan, input bot, dan format pesan.
 - Bot hanya melayani chat ID di `TELEGRAM_ALLOWED_CHAT_ID`.
 - Update Telegram dideduplikasi agar retry tidak membuat transaksi ganda.
 - Endpoint `/setup` mensyaratkan `SETUP_TOKEN`.
+- Upload struk dibatasi 8.000 karakter teks OCR di `/api/receipt/parse`; foto Telegram
+  hanya diproses untuk chat ID yang diizinkan dan disimpan sementara maksimal 60 menit.
 
 Catatan: `SETUP_TOKEN` sebaiknya dikosongkan setelah webhook terpasang.
 

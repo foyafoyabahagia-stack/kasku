@@ -8,7 +8,8 @@ import {
 import { guessCategory } from '../netlify/functions/lib/categories.mjs';
 import { totals, byCategory, dailySeries, monthlySeries } from '../netlify/functions/lib/analytics.mjs';
 import { parseEntry } from '../netlify/functions/lib/entry.mjs';
-import { monthReportText, yearReportText, transactionText } from '../netlify/functions/lib/report.mjs';
+import { monthReportText, yearReportText, transactionText, receiptText } from '../netlify/functions/lib/report.mjs';
+import { parseReceiptText, parseAmountToken } from '../netlify/functions/lib/receipt.mjs';
 
 let passed = 0;
 const failures = [];
@@ -125,6 +126,80 @@ check('teks transaksi', txText.includes('Pengeluaran tercatat') && txText.includ
 
 const escaped = transactionText({ type: 'out', amount: 1000, category: '<b>X</b>', note: 'a & b', date: '2026-11-18' });
 check('teks transaksi escape HTML', escaped.includes('&lt;b&gt;X&lt;/b&gt;') && escaped.includes('a &amp; b'), escaped);
+
+/* ---------- Parser struk ---------- */
+eq('token 25.000', parseAmountToken('25.000'), 25000);
+eq('token Rp 1.250.500', parseAmountToken('Rp 1.250.500'), 1250500);
+eq('token 25000,00', parseAmountToken('25000,00'), 25000);
+eq('token 1,234,567', parseAmountToken('1,234,567'), 1234567);
+eq('token 87.500', parseAmountToken('87.500'), 87500);
+
+const strukIndomaret = `INDOMARET
+JL SUDIRMAN NO 12
+TELP 021-5551234
+18/11/2026 19:42
+
+SUSU UHT 1L      18.500
+ROTI TAWAR       15.000
+SABUN MANDI      12.000
+TOTAL            45.500
+TUNAI            50.000
+KEMBALI           4.500
+TERIMA KASIH`;
+
+const struk = parseReceiptText(strukIndomaret, { today: '2026-11-20' });
+eq('struk: total bayar', struk.amount, 45500);
+eq('struk: tanggal', struk.date, '2026-11-18');
+eq('struk: merchant', struk.merchant, 'INDOMARET');
+eq('struk: kategori', struk.category, 'Belanja');
+check('struk: ok', struk.ok === true);
+
+const strukGrand = `TOKO BANGUNAN JAYA
+20/11/2026
+SUBTOTAL        250.000
+DISKON           10.000
+GRAND TOTAL     240.000
+BAYAR           250.000
+KEMBALI          10.000`;
+const grand = parseReceiptText(strukGrand, { today: '2026-11-20' });
+eq('grand total menang dari subtotal', grand.amount, 240000);
+
+const strukTanpaKata = `WARUNG PAK BUDI
+18/11/2026
+NASI GORENG   25.000
+ES TEH         5.000
+BAYAR         50.000
+KEMBALI       20.000`;
+const tanpaKata = parseReceiptText(strukTanpaKata, { today: '2026-11-20' });
+eq('tanpa kata total: bayar dikurangi kembalian', tanpaKata.amount, 30000);
+
+const strukHanyaItem = `TOKO KECIL
+18/11/2026
+KOPI        15.000
+ROTI        12.000
+GULA         8.000`;
+const hanyaItem = parseReceiptText(strukHanyaItem, { today: '2026-11-20' });
+eq('tanpa total & tanpa bayar: angka terbesar', hanyaItem.amount, 15000);
+eq('tanpa kata total: kategori makan', tanpaKata.category, 'Makan & Minum');
+
+const strukApotek = `APOTEK SEHAT
+18 November 2026
+PARACETAMOL   15.000
+TOTAL         15.000`;
+const apotek = parseReceiptText(strukApotek, { today: '2026-11-20' });
+eq('tanggal nama bulan', apotek.date, '2026-11-18');
+eq('kategori apotek', apotek.category, 'Kesehatan');
+
+const strukKosong = parseReceiptText('', { today: '2026-11-20' });
+check('struk kosong tidak ok', strukKosong.ok === false && strukKosong.amount === 0);
+eq('struk kosong pakai tanggal hari ini', strukKosong.date, '2026-11-20');
+
+const receiptMessage = receiptText({
+  merchant: 'Indomaret', amount: 45500, date: '2026-11-18',
+  category: 'Belanja', confidence: 1, note: 'belanja harian',
+});
+check('teks scan memuat total', receiptMessage.includes('45.500'), receiptMessage);
+check('teks scan memuat tombol simpan', receiptMessage.includes('Simpan'), receiptMessage);
 
 /* ---------- Hasil ---------- */
 if (failures.length) {

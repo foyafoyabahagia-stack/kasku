@@ -465,7 +465,11 @@ function renderTable() {
 
   body.innerHTML = shown.map((tx) => {
     const isIn = tx.type === 'in';
-    const source = tx.source === 'telegram' ? 'via bot' : tx.source === 'demo' ? 'contoh' : 'via web';
+    const source = tx.source === 'telegram'
+      ? 'via bot'
+      : tx.source === 'scan'
+        ? 'scan struk'
+        : tx.source === 'demo' ? 'contoh' : 'via web';
     return `
       <tr data-id="${tx.id}" data-month="${tx.date.slice(0, 7)}">
         <td class="col-date">${shortDate(tx.date)}</td>
@@ -541,6 +545,8 @@ function openModal(tx = null) {
   $('#modal-title').textContent = tx ? 'Ubah transaksi' : 'Catat transaksi';
   $('#btn-delete').hidden = !tx;
   $('#form-error').hidden = true;
+  const scanHint = $('#scan-hint');
+  if (scanHint) scanHint.hidden = true;
 
   const type = tx ? tx.type : 'out';
   setFormType(type);
@@ -617,6 +623,105 @@ async function deleteTransaction(tx) {
   } catch (error) {
     toast(error.message, 'error');
   }
+}
+
+/* ---------- Scan struk (OCR di perangkat) ---------- */
+
+let scanToken = 0;
+let tesseractPromise = null;
+
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (tesseractPromise) return tesseractPromise;
+  tesseractPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    script.async = true;
+    script.onload = () => (window.Tesseract
+      ? resolve(window.Tesseract)
+      : reject(new Error('Mesin OCR gagal dimuat.')));
+    script.onerror = () => reject(new Error('Tidak bisa memuat mesin OCR. Periksa koneksi internet.'));
+    document.head.appendChild(script);
+  });
+  return tesseractPromise;
+}
+
+function showScan() {
+  const modal = $('#scan-modal');
+  $('#scan-title').textContent = 'Membaca struk…';
+  setScanProgress(0.05, 'Menyiapkan mesin OCR…');
+  modal.hidden = false;
+}
+
+function hideScan() {
+  $('#scan-modal').hidden = true;
+}
+
+function setScanProgress(value, status) {
+  const percent = Math.max(0, Math.min(1, Number(value) || 0));
+  $('#scan-bar-fill').style.width = `${Math.round(percent * 100)}%`;
+  if (status) $('#scan-status').textContent = status;
+}
+
+async function startScan(file) {
+  if (!file) return;
+  const token = ++scanToken;
+  showScan();
+
+  try {
+    const Tesseract = await loadTesseract();
+    if (token !== scanToken) return;
+
+    const { data } = await Tesseract.recognize(file, 'ind', {
+      logger: (event) => {
+        if (token !== scanToken) return;
+        if (event.status === 'loading language traineddata') {
+          setScanProgress(0.12, 'Mengunduh data bahasa…');
+        } else if (event.status === 'initializing api') {
+          setScanProgress(0.2, 'Menyiapkan pembacaan…');
+        } else if (event.status === 'recognizing text') {
+          setScanProgress(0.2 + (Number(event.progress) || 0) * 0.7, 'Membaca teks struk…');
+        }
+      },
+    });
+    if (token !== scanToken) return;
+
+    setScanProgress(0.94, 'Menyusun data transaksi…');
+    const parsed = await api('/api/receipt/parse', {
+      method: 'POST',
+      body: JSON.stringify({ text: data.text || '' }),
+    });
+    if (token !== scanToken) return;
+
+    hideScan();
+    if (!parsed.ok) {
+      toast('Nominal tidak terbaca dari foto itu. Coba foto lebih dekat dan terang.', 'error');
+      return;
+    }
+    prefillFromScan(parsed);
+  } catch (error) {
+    if (token !== scanToken) return;
+    hideScan();
+    toast(error.message || 'Gagal membaca struk.', 'error');
+  } finally {
+    $('#scan-input').value = '';
+  }
+}
+
+function prefillFromScan(parsed) {
+  openModal();
+  setFormType('out');
+  buildCategoryOptions('out', parsed.category || '');
+  $('#f-amount').value = Number(parsed.amount).toLocaleString('id-ID');
+  $('#f-date').value = parsed.date || defaultFormDate();
+  $('#f-note').value = parsed.merchant || '';
+
+  const hint = $('#scan-hint');
+  const percent = Math.round((Number(parsed.confidence) || 0) * 100);
+  hint.textContent = `Terisi dari scan struk (keyakinan ${percent}%). Periksa nominal dan tanggal sebelum menyimpan.`;
+  hint.hidden = false;
+
+  toast('Struk terbaca. Periksa lalu simpan.');
 }
 
 /* ---------- Tema & event ---------- */
@@ -738,6 +843,22 @@ function bindStaticEvents() {
   });
 
   $('#btn-add').addEventListener('click', () => openModal());
+
+  $('#btn-scan').addEventListener('click', () => {
+    $('#scan-hint').hidden = true;
+    $('#scan-input').click();
+  });
+
+  $('#scan-input').addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (file) startScan(file);
+  });
+
+  $('#scan-cancel').addEventListener('click', () => {
+    scanToken += 1;
+    hideScan();
+    toast('Pembacaan struk dibatalkan.');
+  });
   $('#modal-close').addEventListener('click', closeModal);
   $('#btn-cancel').addEventListener('click', closeModal);
   $('#modal').addEventListener('click', (event) => {
