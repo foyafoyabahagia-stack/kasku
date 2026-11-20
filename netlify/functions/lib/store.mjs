@@ -71,16 +71,23 @@ export async function removeTransaction(store, ym, id) {
 
 /** Kumpulan key blob dengan prefix tertentu. */
 export async function listKeys(store, prefix) {
+  const keys = [];
+  const push = (blob) => {
+    if (blob && typeof blob.key === 'string') keys.push(blob.key);
+  };
+
   try {
-    const iterable = await store.list({ prefix, paginate: true });
-    const keys = [];
-    // eslint-disable-next-line no-restricted-syntax
-    for await (const entry of iterable) keys.push(entry.key);
-    return keys;
+    // `paginate: true` mengembalikan async iterator berisi halaman ({ blobs }), bukan blob tunggal.
+    for await (const page of store.list({ prefix, paginate: true })) {
+      if (page && Array.isArray(page.blobs)) page.blobs.forEach(push);
+      else push(page);
+    }
   } catch {
     const result = await store.list({ prefix });
-    return (result.blobs || []).map((blob) => blob.key);
+    (result.blobs || []).forEach(push);
   }
+
+  return [...new Set(keys)];
 }
 
 /** Daftar bulan yang punya data, terbaru lebih dulu -> ["2026-11", ...] */
