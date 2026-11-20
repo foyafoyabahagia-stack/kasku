@@ -11,12 +11,13 @@ function signed(amount, type) {
   return `${type === 'in' ? '+' : '-'}${formatIDR(amount)}`;
 }
 
-export function transactionText(tx) {
+export function transactionText(tx, walletLabel = '') {
   const label = tx.type === 'in' ? 'Pemasukan' : 'Pengeluaran';
   return [
     `<b>${label} tercatat</b>`,
     `${signed(tx.amount, tx.type)}`,
     `Kategori: ${escapeHtml(tx.category)}`,
+    walletLabel ? `Dompet: ${escapeHtml(walletLabel)}` : null,
     tx.note ? `Catatan: ${escapeHtml(tx.note)}` : null,
     `Tanggal: ${shortDate(tx.date)}`,
   ].filter(Boolean).join('\n');
@@ -103,6 +104,9 @@ export const HELP_TEXT = [
   'kopi 25rb  -> pengeluaran',
   'masuk gaji 5jt  -> pemasukan',
   'beli bensin 50rb 18/11  -> pengeluaran bertanggal',
+  'kopi 25rb @gopay  -> dompet GoPay',
+  '',
+  'Dompet mengikuti yang ada di dashboard (Tunai, GoPay, OVO, DANA, dan lainnya).',
   '',
   'Perintah yang tersedia:',
   '/masuk 500000 gaji november',

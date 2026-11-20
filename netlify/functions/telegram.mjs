@@ -16,6 +16,7 @@ import {
   HELP_TEXT, transactionText, monthReportText, yearReportText, balanceText,
 } from './lib/report.mjs';
 import { hasVision } from './lib/vision.mjs';
+import { getWallets, resolveWalletId, walletName, walletTag } from './lib/wallets.mjs';
 
 function allowedChats() {
   return String(process.env.TELEGRAM_ALLOWED_CHAT_ID || '')
@@ -189,7 +190,9 @@ async function handleReport(store, chatId, args) {
   await sendMessage(chatId, yearReportText(items, targetYear));
 }
 
-async function recordTransaction(store, chatId, type, parsed) {
+async function recordTransaction(store, chatId, type, parsed, wallet = '') {
+  const wallets = await getWallets(store);
+  const walletId = resolveWalletId(wallets, wallet) || resolveWalletId(wallets, '');
   const now = new Date().toISOString();
   const tx = {
     id: crypto.randomUUID(),
@@ -198,18 +201,32 @@ async function recordTransaction(store, chatId, type, parsed) {
     note: parsed.note,
     category: parsed.category || guessCategory(type, parsed.note),
     date: parsed.date || todayISO(),
+    wallet: walletId,
     source: 'telegram',
     chatId: String(chatId),
     createdAt: now,
     updatedAt: now,
   };
   await addTransaction(store, tx);
-  return tx;
+  return { tx, walletLabel: walletName(wallets, walletId) };
 }
 
 async function handleText(store, message) {
   const chatId = message.chat.id;
-  const text = String(message.text || '').trim();
+  const raw = String(message.text || '').trim();
+  const tagged = walletTag(raw);
+  const text = tagged.text;
+
+  if (tagged.tag) {
+    const wallets = await getWallets(store);
+    if (!resolveWalletId(wallets, tagged.tag)) {
+      await sendMessage(
+        chatId,
+        `Dompet @${escapeHtml(tagged.tag)} belum ada. Tambahkan dulu di dashboard, atau pakai nama yang sudah terdaftar.`,
+      );
+      return;
+    }
+  }
 
   // Kalimat bebas tanpa garis miring: "kopi 25rb", "masuk gaji 5jt".
   if (!text.startsWith('/')) {
@@ -218,11 +235,11 @@ async function handleText(store, message) {
       await sendMessage(chatId, parsed.error);
       return;
     }
-    const tx = await recordTransaction(store, chatId, parsed.type, parsed);
+    const { tx, walletLabel } = await recordTransaction(store, chatId, parsed.type, parsed, tagged.tag);
     const hint = parsed.explicit
       ? ''
       : '\n\n<i>Dicatat sebagai pengeluaran. Untuk pemasukan, tulis "masuk ...".</i>';
-    await sendMessage(chatId, `${transactionText(tx)}${hint}`, {
+    await sendMessage(chatId, `${transactionText(tx, walletLabel)}${hint}`, {
       reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id),
     });
     return;
@@ -247,8 +264,8 @@ async function handleText(store, message) {
       await sendMessage(chatId, parsed.error);
       return;
     }
-    const tx = await recordTransaction(store, chatId, 'in', parsed);
-    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
+    const { tx, walletLabel } = await recordTransaction(store, chatId, 'in', parsed, tagged.tag);
+    await sendMessage(chatId, transactionText(tx, walletLabel), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
     return;
   }
 
@@ -258,8 +275,8 @@ async function handleText(store, message) {
       await sendMessage(chatId, parsed.error);
       return;
     }
-    const tx = await recordTransaction(store, chatId, 'out', parsed);
-    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
+    const { tx, walletLabel } = await recordTransaction(store, chatId, 'out', parsed, tagged.tag);
+    await sendMessage(chatId, transactionText(tx, walletLabel), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
     return;
   }
 
@@ -395,6 +412,7 @@ async function handleReceiptCallback(store, query, chatId, messageId, data) {
     return;
   }
 
+  const wallets = await getWallets(store);
   const now = new Date().toISOString();
   const tx = {
     id: crypto.randomUUID(),
@@ -403,6 +421,7 @@ async function handleReceiptCallback(store, query, chatId, messageId, data) {
     note: pending.note,
     category: pending.category,
     date: pending.date,
+    wallet: resolveWalletId(wallets, pending.wallet || ''),
     source: 'scan',
     chatId: String(chatId),
     createdAt: now,

@@ -28,6 +28,14 @@ Aplikasi keuangan pribadi profesional yang berjalan **hanya di GitHub + Netlify*
 - Grafik arus kas harian (bulanan pada mode tahun)
 - Donat kategori pengeluaran + persentase
 
+**Dompet & sinkron saldo**
+- Daftar dompet: Tunai, GoPay, OVO, DANA, ShopeePay, dan dompet buatan sendiri (maks 12)
+- Saldo tiap dompet dihitung otomatis dari transaksi (masuk − keluar)
+- Tombol **Sinkron**: masukkan saldo yang terlihat di aplikasi e-wallet, KasKu mencatat
+  satu transaksi penyesuaian bila ada selisih, sehingga angka di dashboard sama dengan kenyataan
+- Tiap transaksi punya dompet; dari bot bisa ditandai `@gopay`, `@ovo`, dan seterusnya
+- Dompet yang masih dipakai transaksi tidak bisa dihapus
+
 **Scan struk**
 - Tombol **Scan struk** di dashboard: foto dibaca di perangkat (Tesseract.js), lalu form terisi otomatis
 - Kirim foto struk ke bot Telegram: nominal, tanggal, dan toko dibaca lewat Gemini, bot menawarkan tombol **Simpan**
@@ -88,6 +96,7 @@ kasku/
 │     ├─ store.mjs   auth.mjs   report.mjs      telegram-api.mjs
 │     ├─ receipt.mjs             # parser teks struk (total, tanggal, toko)
 │     ├─ vision.mjs              # pembacaan foto struk via Gemini
+│     ├─ wallets.mjs             # daftar dompet & hitung saldo per dompet
 │     └─ entry.mjs
 └─ test/smoke.mjs                # 80 pemeriksaan logika tanpa dependensi
 ```
@@ -174,6 +183,7 @@ Buka `https://SITUS-ANDA.netlify.app` → masukkan `APP_PASSWORD`.
 | Perintah | Contoh | Keterangan |
 | --- | --- | --- |
 | Kalimat bebas | `kopi 25rb` | Langsung dicatat sebagai pengeluaran |
+| Dompet | `kopi 25rb @gopay` | Catat ke dompet GoPay |
 | Kalimat bebas | `masuk gaji 5jt` | Awalan `masuk`/`terima`/`gaji` membuatnya pemasukan |
 | `/keluar` | `/keluar 35000 makan siang` | Catat pengeluaran |
 | `/masuk` | `/masuk 8500000 gaji november` | Catat pemasukan |
@@ -197,6 +207,36 @@ Tanda arah pada kalimat bebas: `masuk`, `masukin`, `terima`, `dapat`, `cair`, `g
 `thr`, `komisi` untuk pemasukan; `keluar`, `beli`, `bayar`, `belanja`, `jajan`, `makan`,
 `minum`, `kopi`, `bensin`, `parkir`, `topup` untuk pengeluaran. Bila tidak ada tanda apa pun,
 transaksi dianggap pengeluaran dan bot menampilkan pengingat singkat.
+
+---
+
+## Dompet & sinkron saldo
+
+Dashboard punya kartu **Dompet & saldo** berisi semua dompet beserta saldo tercatat
+(pemasukan dikurangi pengeluaran dompet itu) dan jumlah transaksinya.
+
+Alur sinkron:
+
+1. Buka aplikasi dompet (misal GoPay) dan lihat saldo aslinya.
+2. Di KasKu tekan **Sinkron** pada kartu GoPay, masukkan angka tersebut.
+3. KasKu menghitung selisih terhadap saldo tercatat, lalu menyimpannya sebagai satu
+   transaksi berlabel `Sinkron saldo GoPay` dengan kategori `Lainnya`.
+   Pemasukan bila saldo nyata lebih besar, pengeluaran bila lebih kecil.
+4. Bila angka sudah sama, tidak ada transaksi yang dibuat.
+
+Transaksi penyesuaian tetap transaksi biasa: bisa diubah, dihapus, atau dibatalkan dengan
+`/undo` di Telegram. Saldo dompet tidak disimpan terpisah — selalu dihitung ulang dari
+transaksi, jadi tidak ada dua sumber kebenaran yang bisa berbeda.
+
+Dari Telegram, tambahkan `@namadompet` di akhir pesan:
+
+```
+kopi 25rb @gopay
+masuk gaji 5jt @dana
+keluar 50000 bensin @shopeepay
+```
+
+Dompet bawaan bila tidak ditulis adalah **Tunai** (`cash`).
 
 ---
 

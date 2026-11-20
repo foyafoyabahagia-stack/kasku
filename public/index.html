@@ -80,6 +80,20 @@
     <main>
       <section class="kpis" id="kpis" aria-label="Ringkasan"></section>
 
+      <section class="card wallets-card" aria-label="Dompet dan saldo">
+        <header class="card-head wrap">
+          <div>
+            <h2>Dompet &amp; saldo</h2>
+            <p class="card-sub" id="wallets-sub">Saldo tercatat dari transaksi tiap dompet</p>
+          </div>
+          <button id="btn-wallet-add" class="btn ghost" type="button">
+            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Dompet
+          </button>
+        </header>
+        <div id="wallets" class="wallets"></div>
+      </section>
+
       <section class="grid-2">
         <article class="card">
           <header class="card-head">
@@ -175,7 +189,7 @@
           </div>
         </label>
 
-        <div class="row-2">
+        <div class="row-3">
           <label class="field">
             <span>Tanggal</span>
             <input id="f-date" type="date" required>
@@ -183,6 +197,10 @@
           <label class="field">
             <span>Kategori</span>
             <select id="f-cat"></select>
+          </label>
+          <label class="field">
+            <span>Dompet</span>
+            <select id="f-wallet"></select>
           </label>
         </div>
 
@@ -198,6 +216,63 @@
           <span class="grow"></span>
           <button id="btn-cancel" class="btn ghost" type="button">Batal</button>
           <button id="btn-save" class="btn primary" type="submit">Simpan</button>
+        </footer>
+      </form>
+    </div>
+  </div>
+
+  <div id="sync-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="sync-title">
+      <header class="modal-head">
+        <h2 id="sync-title">Sinkron saldo</h2>
+        <button id="sync-close" class="icon-btn" type="button" aria-label="Tutup">✕</button>
+      </header>
+
+      <form id="sync-form" novalidate>
+        <p class="muted" id="sync-sub"></p>
+
+        <label class="field">
+          <span>Saldo di aplikasi dompet</span>
+          <div class="amount-input">
+            <span class="prefix">Rp</span>
+            <input id="sync-amount" inputmode="numeric" autocomplete="off" placeholder="0" required>
+          </div>
+        </label>
+
+        <p class="hint" id="sync-diff"></p>
+        <p id="sync-error" class="alert" role="alert" hidden></p>
+
+        <footer class="modal-actions">
+          <button id="sync-delete" class="btn danger ghost" type="button" hidden>Hapus dompet</button>
+          <span class="grow"></span>
+          <button id="sync-cancel" class="btn ghost" type="button">Batal</button>
+          <button id="sync-save" class="btn primary" type="submit">Sinkronkan</button>
+        </footer>
+      </form>
+    </div>
+  </div>
+
+  <div id="wallet-modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wallet-title">
+      <header class="modal-head">
+        <h2 id="wallet-title">Tambah dompet</h2>
+        <button id="wallet-close" class="icon-btn" type="button" aria-label="Tutup">✕</button>
+      </header>
+
+      <form id="wallet-form" novalidate>
+        <label class="field">
+          <span>Nama dompet</span>
+          <input id="wallet-name" maxlength="24" autocomplete="off" placeholder="GoPay" required>
+        </label>
+
+        <div class="wallet-presets" id="wallet-presets"></div>
+
+        <p id="wallet-error" class="alert" role="alert" hidden></p>
+
+        <footer class="modal-actions">
+          <span class="grow"></span>
+          <button id="wallet-cancel" class="btn ghost" type="button">Batal</button>
+          <button id="wallet-save" class="btn primary" type="submit">Tambah</button>
         </footer>
       </form>
     </div>

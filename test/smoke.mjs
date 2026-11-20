@@ -10,6 +10,9 @@ import { totals, byCategory, dailySeries, monthlySeries } from '../netlify/funct
 import { parseEntry, parseNatural } from '../netlify/functions/lib/entry.mjs';
 import { monthReportText, yearReportText, transactionText, receiptText } from '../netlify/functions/lib/report.mjs';
 import { parseReceiptText, parseAmountToken } from '../netlify/functions/lib/receipt.mjs';
+import {
+  newWallet, resolveWalletId, walletBalances, syncAdjustment, walletTag, DEFAULT_WALLETS,
+} from '../netlify/functions/lib/wallets.mjs';
 
 let passed = 0;
 const failures = [];
@@ -230,6 +233,45 @@ eq('bebas: uang masuk nominal', naturalUangMasuk.amount, 75000);
 
 const naturalTanpaNominal = parseNatural('makan siang tadi');
 check('bebas: tanpa nominal ditolak', /Nominalnya belum ada/.test(naturalTanpaNominal.error || ''));
+
+/* ---------- Dompet ---------- */
+const baseWallets = DEFAULT_WALLETS.map((wallet) => ({ ...wallet }));
+eq('dompet: bawaan ada lima', baseWallets.length, 5);
+eq('dompet: id dari nama', resolveWalletId(baseWallets, 'gopay'), 'gopay');
+eq('dompet: id tidak peka huruf', resolveWalletId(baseWallets, 'GoPay'), 'gopay');
+eq('dompet: kosong pakai bawaan', resolveWalletId(baseWallets, ''), 'cash');
+eq('dompet: tidak dikenal null', resolveWalletId(baseWallets, 'dana2'), null);
+
+const createdWallet = newWallet('Bank Jago', baseWallets);
+eq('dompet: slug baru', createdWallet.wallet.id, 'bank-jago');
+const duplicateWallet = newWallet('gopay', baseWallets);
+check('dompet: nama ganda ditolak', /sudah ada/.test(duplicateWallet.error || ''));
+
+const saldoItems = [
+  { type: 'in', amount: 500000, wallet: 'gopay' },
+  { type: 'out', amount: 125000, wallet: 'gopay' },
+  { type: 'out', amount: 30000, wallet: 'ovo' },
+  { type: 'out', amount: 10000 },
+];
+const saldo = walletBalances(saldoItems, baseWallets);
+eq('dompet: saldo gopay', saldo.find((row) => row.id === 'gopay').balance, 375000);
+eq('dompet: saldo ovo', saldo.find((row) => row.id === 'ovo').balance, -30000);
+eq('dompet: transaksi tanpa dompet masuk tunai', saldo.find((row) => row.id === 'cash').balance, -10000);
+eq('dompet: hitung transaksi', saldo.find((row) => row.id === 'gopay').count, 2);
+
+const kurang = syncAdjustment(375000, 400000, 'GoPay');
+eq('dompet: selisih kurang jadi pemasukan', kurang.type, 'in');
+eq('dompet: selisih kurang nominal', kurang.amount, 25000);
+check('dompet: catatan sinkron', /Sinkron saldo GoPay/.test(kurang.note));
+const lebih = syncAdjustment(375000, 350000, 'GoPay');
+eq('dompet: selisih lebih jadi pengeluaran', lebih.type, 'out');
+eq('dompet: selisih lebih nominal', lebih.amount, 25000);
+check('dompet: saldo cocok tanpa penyesuaian', syncAdjustment(375000, 375000, 'GoPay') === null);
+
+const tag = walletTag('kopi 25rb @gopay');
+eq('dompet: tag terpisah dari teks', tag.text, 'kopi 25rb');
+eq('dompet: nama tag terbaca', tag.tag, 'gopay');
+check('dompet: tanpa tag tetap utuh', walletTag('kopi 25rb').text === 'kopi 25rb');
 
 /* ---------- Hasil ---------- */
 if (failures.length) {

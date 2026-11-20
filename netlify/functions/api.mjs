@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import {
   openStore, readMonth, readMonths, writeMonth, addTransaction,
-  updateTransaction, removeTransaction, listMonths,
+  updateTransaction, removeTransaction, listMonths, listKeys,
 } from './lib/store.mjs';
 import {
   isAuthenticated, checkPassword, createToken, sessionCookie, clearedCookie,
@@ -16,6 +16,10 @@ import {
 } from './lib/dates.mjs';
 import { CATEGORIES, sanitizeCategory } from './lib/categories.mjs';
 import { parseReceiptText } from './lib/receipt.mjs';
+import {
+  getWallets, saveWallets, newWallet, resolveWalletId, walletName,
+  walletBalances, syncAdjustment, MAX_WALLETS,
+} from './lib/wallets.mjs';
 import { totals, byCategory, dailySeries, monthlySeries, flatten } from './lib/analytics.mjs';
 
 const JSON_HEADERS = {
@@ -77,13 +81,14 @@ function csvCell(value) {
   return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function buildCsv(items) {
-  const rows = [['Tanggal', 'Tipe', 'Kategori', 'Keterangan', 'Nominal']];
+function buildCsv(items, wallets = []) {
+  const rows = [['Tanggal', 'Tipe', 'Kategori', 'Dompet', 'Keterangan', 'Nominal']];
   for (const item of items) {
     rows.push([
       item.date,
       item.type === 'in' ? 'Pemasukan' : 'Pengeluaran',
       item.category,
+      walletName(wallets, item.wallet) || walletName(wallets, resolveWalletId(wallets, item.wallet)) || '',
       item.note || '',
       String(item.amount),
     ]);
@@ -119,6 +124,10 @@ function validatePayload(body, existing = null) {
   if (body.category !== undefined || !existing) {
     const type = result.type || existing?.type || 'out';
     result.category = sanitizeCategory(type, body.category, result.note ?? existing?.note);
+  }
+
+  if (body.wallet !== undefined || !existing) {
+    result.wallet = String(body.wallet ?? existing?.wallet ?? '').trim().slice(0, 32);
   }
 
   if (errors.length) return { errors };
@@ -182,6 +191,104 @@ export default async (request) => {
       if (!years.includes(currentYear)) years.push(currentYear);
       years.sort((a, b) => b - a);
       return json({ months, years, today: todayISO(), timezone: process.env.TZ || 'Asia/Jakarta' });
+    }
+
+    if (path === '/telegram/reset-dedupe' && method === 'POST') {
+      await store.setJSON('state/last-update', { id: 0, at: '1970-01-01T00:00:00.000Z' });
+      return json({ ok: true });
+    }
+
+    if (path === '/telegram/chats') {
+      const keys = await listKeys(store, 'telegram/chats-');
+      const chats = [];
+      for (const key of keys) {
+        const doc = await store.get(key, { type: 'json' });
+        if (doc?.chatId) chats.push(doc);
+      }
+      chats.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+      const allowed = String(process.env.TELEGRAM_ALLOWED_CHAT_ID || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return json({ chats, allowed });
+    }
+
+    if (path === '/wallets' && method === 'GET') {
+      const wallets = await getWallets(store);
+      const { map } = await loadAll(store);
+      const rows = walletBalances(flatten(map), wallets);
+      return json({
+        wallets: rows,
+        total: rows.reduce((sum, row) => sum + row.balance, 0),
+        max: MAX_WALLETS,
+        currency: 'IDR',
+      });
+    }
+
+    if (path === '/wallets' && method === 'POST') {
+      const body = await readJson(request);
+      const wallets = await getWallets(store);
+      const created = newWallet(body.name, wallets);
+      if (created.error) return badRequest(created.error);
+      await saveWallets(store, [...wallets, created.wallet]);
+      return json({ wallet: created.wallet }, 201);
+    }
+
+    if (path === '/wallets/sync' && method === 'POST') {
+      const body = await readJson(request);
+      const wallets = await getWallets(store);
+      const walletId = resolveWalletId(wallets, body.id);
+      if (!walletId) return badRequest('Dompet tidak dikenal.');
+      const target = Math.round(Number(body.balance));
+      if (!Number.isFinite(target)) return badRequest('Saldo harus berupa angka.');
+      if (Math.abs(target) > 1e13) return badRequest('Saldo terlalu besar.');
+
+      const { map } = await loadAll(store);
+      const row = walletBalances(flatten(map), wallets).find((item) => item.id === walletId);
+      const adjustment = syncAdjustment(row ? row.balance : 0, target, row ? row.name : 'dompet');
+
+      let transaction = null;
+      if (adjustment) {
+        const now = new Date().toISOString();
+        const date = isValidISODate(body.date) ? body.date : todayISO();
+        transaction = {
+          id: newId(),
+          type: adjustment.type,
+          amount: adjustment.amount,
+          date,
+          note: adjustment.note,
+          category: 'Lainnya',
+          wallet: walletId,
+          source: 'sync',
+          createdAt: now,
+          updatedAt: now,
+        };
+        await addTransaction(store, transaction);
+      }
+
+      const after = walletBalances(flatten(await readMonths(store, await listMonths(store))), wallets)
+        .find((item) => item.id === walletId);
+
+      return json({
+        ok: true,
+        wallet: { id: walletId, name: row ? row.name : '', balance: after ? after.balance : target },
+        adjustment: transaction,
+      });
+    }
+
+    const walletMatch = path.match(/^\/wallets\/([A-Za-z0-9_-]{2,32})$/);
+    if (walletMatch && method === 'DELETE') {
+      const wallets = await getWallets(store);
+      const walletId = resolveWalletId(wallets, walletMatch[1]);
+      if (!walletId) return json({ error: 'Dompet tidak ditemukan.' }, 404);
+      if (wallets.length <= 1) return badRequest('Minimal satu dompet harus ada.');
+      const { map } = await loadAll(store);
+      const used = flatten(map).filter((tx) => (resolveWalletId(wallets, tx.wallet) || '') === walletId).length;
+      if (used > 0) {
+        return json({ error: `Dompet masih dipakai ${used} transaksi. Pindahkan dulu transaksinya.` }, 409);
+      }
+      await saveWallets(store, wallets.filter((wallet) => wallet.id !== walletId));
+      return json({ ok: true });
     }
 
     if (path === '/receipt/parse' && method === 'POST') {
@@ -279,10 +386,14 @@ export default async (request) => {
       const body = await readJson(request);
       const checked = validatePayload(body);
       if (checked.errors) return json({ error: checked.errors.join(' ') }, 400);
+      const wallets = await getWallets(store);
+      const walletId = resolveWalletId(wallets, checked.value.wallet);
+      if (!walletId) return badRequest('Dompet tidak dikenal.');
       const now = new Date().toISOString();
       const tx = {
         id: newId(),
         ...checked.value,
+        wallet: walletId,
         source: 'web',
         createdAt: now,
         updatedAt: now,
@@ -303,7 +414,10 @@ export default async (request) => {
         if (!existing) return json({ error: 'Transaksi tidak ditemukan.' }, 404);
         const checked = validatePayload(body, existing);
         if (checked.errors) return json({ error: checked.errors.join(' ') }, 400);
-        const updated = await updateTransaction(store, monthParam, id, checked.value);
+        const wallets = await getWallets(store);
+        const walletId = resolveWalletId(wallets, checked.value.wallet);
+        if (!walletId) return badRequest('Dompet tidak dikenal.');
+        const updated = await updateTransaction(store, monthParam, id, { ...checked.value, wallet: walletId });
         return json({ transaction: updated });
       }
 
@@ -325,7 +439,7 @@ export default async (request) => {
       const items = flatten(map).sort((a, b) => (a.date < b.date ? -1 : 1));
       if (!items.length) return json({ error: 'Tidak ada transaksi untuk periode ini.' }, 404);
       const suffix = monthParam || yearParam || items[0].date.slice(0, 4);
-      return new Response(buildCsv(items), {
+      return new Response(buildCsv(items, await getWallets(store)), {
         status: 200,
         headers: {
           'content-type': 'text/csv; charset=utf-8',

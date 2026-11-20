@@ -25,9 +25,14 @@ const state = {
   filters: { q: '', type: '', category: '' },
   visible: 100,
   categories: { in: [], out: [] },
+  wallets: [],
+  walletsMax: 12,
+  syncTarget: null,
   editing: null,
   formType: 'out',
 };
+
+const WALLET_PRESETS = ['GoPay', 'OVO', 'DANA', 'ShopeePay', 'Bank Jago', 'SeaBank', 'Jenius'];
 
 /* ---------- Utilitas ---------- */
 
@@ -205,7 +210,7 @@ function periodParams() {
 
 async function refresh() {
   try {
-    await Promise.all([loadSummary(), loadList()]);
+    await Promise.all([loadSummary(), loadList(), loadWallets()]);
   } catch (error) {
     toast(error.message, 'error');
   }
@@ -230,6 +235,184 @@ async function loadList() {
   const data = await api(`/api/transactions?${params.toString()}`);
   state.list = data;
   renderTable();
+}
+
+/* ---------- Dompet ---------- */
+
+function walletLabelOf(id) {
+  const found = state.wallets.find((wallet) => wallet.id === id);
+  return found ? found.name : '';
+}
+
+async function loadWallets() {
+  const data = await api('/api/wallets');
+  state.wallets = data.wallets || [];
+  state.walletsMax = data.max || 12;
+  renderWallets(data);
+  buildWalletOptions($('#f-wallet') ? $('#f-wallet').value : '');
+}
+
+function renderWallets(data) {
+  const box = $('#wallets');
+  if (!box) return;
+  const rows = data.wallets || [];
+  const total = Number(data.total) || 0;
+  $('#wallets-sub').textContent = rows.length
+    ? `Total ${money(total)} di ${rows.length} dompet`
+    : 'Belum ada dompet.';
+
+  box.innerHTML = rows.map((row) => `
+    <article class="wallet" data-id="${escapeHtml(row.id)}">
+      <header class="wallet-head">
+        <span class="wallet-name">${escapeHtml(row.name)}</span>
+        <span class="wallet-count">${row.count} transaksi</span>
+      </header>
+      <strong class="wallet-balance ${row.balance < 0 ? 'neg' : ''}">${money(row.balance)}</strong>
+      <div class="wallet-foot">
+        <span class="muted">masuk ${money(row.income)} · keluar ${money(row.outcome)}</span>
+        <button type="button" class="btn ghost small" data-act="sync">Sinkron</button>
+      </div>
+    </article>
+  `).join('');
+}
+
+function buildWalletOptions(selected = '') {
+  const select = $('#f-wallet');
+  if (!select) return;
+  const value = selected || select.value || '';
+  select.innerHTML = state.wallets
+    .map((wallet) => `<option value="${escapeHtml(wallet.id)}">${escapeHtml(wallet.name)}</option>`)
+    .join('');
+  select.value = state.wallets.some((wallet) => wallet.id === value)
+    ? value
+    : (state.wallets[0]?.id || '');
+}
+
+function openSync(walletId) {
+  const row = state.wallets.find((wallet) => wallet.id === walletId);
+  if (!row) return;
+  state.syncTarget = row;
+  $('#sync-title').textContent = `Sinkron ${row.name}`;
+  $('#sync-sub').textContent = `Saldo tercatat dari transaksi: ${money(row.balance)}. Masukkan saldo yang terlihat di aplikasi ${row.name}.`;
+  $('#sync-amount').value = '';
+  $('#sync-diff').textContent = 'Selisih akan disimpan sebagai satu transaksi penyesuaian.';
+  $('#sync-error').hidden = true;
+  $('#sync-delete').hidden = false;
+  $('#sync-modal').hidden = false;
+  setTimeout(() => $('#sync-amount').focus(), 40);
+}
+
+function closeSync() {
+  $('#sync-modal').hidden = true;
+  state.syncTarget = null;
+}
+
+function updateSyncDiff() {
+  const row = state.syncTarget;
+  if (!row) return;
+  const digits = String($('#sync-amount').value).replace(/[^\d]/g, '');
+  const target = Number(digits) || 0;
+  const diff = target - Number(row.balance);
+  if (!digits) {
+    $('#sync-diff').textContent = 'Selisih akan disimpan sebagai satu transaksi penyesuaian.';
+    return;
+  }
+  if (!diff) {
+    $('#sync-diff').textContent = 'Saldo sudah cocok, tidak ada penyesuaian.';
+    return;
+  }
+  $('#sync-diff').textContent = diff > 0
+    ? `Selisih +${money(diff)} dicatat sebagai pemasukan penyesuaian.`
+    : `Selisih −${money(Math.abs(diff))} dicatat sebagai pengeluaran penyesuaian.`;
+}
+
+async function saveSync(event) {
+  event.preventDefault();
+  const row = state.syncTarget;
+  if (!row) return;
+  const errorBox = $('#sync-error');
+  errorBox.hidden = true;
+  const digits = String($('#sync-amount').value).replace(/[^\d]/g, '');
+  if (!digits) {
+    errorBox.textContent = 'Isi saldo yang terlihat di aplikasi dompet.';
+    errorBox.hidden = false;
+    return;
+  }
+
+  const button = $('#sync-save');
+  button.disabled = true;
+  try {
+    const result = await api('/api/wallets/sync', {
+      method: 'POST',
+      body: JSON.stringify({ id: row.id, balance: Number(digits) }),
+    });
+    toast(result.adjustment
+      ? `Saldo ${result.wallet.name} disinkronkan ke ${money(result.wallet.balance)}.`
+      : `Saldo ${result.wallet.name} sudah cocok.`);
+    closeSync();
+    await refresh();
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteWallet() {
+  const row = state.syncTarget;
+  if (!row) return;
+  if (!window.confirm(`Hapus dompet ${row.name}?`)) return;
+  try {
+    await api(`/api/wallets/${encodeURIComponent(row.id)}`, { method: 'DELETE' });
+    toast('Dompet dihapus.');
+    closeSync();
+    await refresh();
+  } catch (error) {
+    const box = $('#sync-error');
+    box.textContent = error.message;
+    box.hidden = false;
+  }
+}
+
+function openWalletModal() {
+  $('#wallet-name').value = '';
+  $('#wallet-error').hidden = true;
+  $('#wallet-presets').innerHTML = WALLET_PRESETS
+    .map((name) => `<button type="button" class="chip" data-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+    .join('');
+  $('#wallet-modal').hidden = false;
+  setTimeout(() => $('#wallet-name').focus(), 40);
+}
+
+function closeWalletModal() {
+  $('#wallet-modal').hidden = true;
+}
+
+async function saveWallet(event) {
+  event.preventDefault();
+  const errorBox = $('#wallet-error');
+  errorBox.hidden = true;
+  const name = $('#wallet-name').value.trim();
+  if (!name) {
+    errorBox.textContent = 'Nama dompet wajib diisi.';
+    errorBox.hidden = false;
+    return;
+  }
+
+  const button = $('#wallet-save');
+  button.disabled = true;
+  try {
+    await api('/api/wallets', { method: 'POST', body: JSON.stringify({ name }) });
+    toast(`Dompet ${name} ditambahkan.`);
+    closeWalletModal();
+    await refresh();
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /* ---------- KPI ---------- */
@@ -477,6 +660,7 @@ function renderTable() {
           <span class="tx-note">${escapeHtml(tx.note || '(tanpa keterangan)')}</span>
           <span class="tx-meta">
             <span class="cat">${escapeHtml(tx.category)}</span>
+            ${walletLabelOf(tx.wallet) ? `<span class="wallet-chip">${escapeHtml(walletLabelOf(tx.wallet))}</span>` : ''}
             <span class="src">${source}</span>
           </span>
         </td>
@@ -553,6 +737,7 @@ function openModal(tx = null) {
   buildCategoryOptions(type, tx ? tx.category : '');
 
   $('#f-amount').value = tx ? Number(tx.amount).toLocaleString('id-ID') : '';
+  buildWalletOptions(tx ? tx.wallet : '');
   $('#f-date').value = tx ? tx.date : defaultFormDate();
   $('#f-note').value = tx ? (tx.note || '') : '';
 
@@ -586,7 +771,7 @@ async function saveForm(event) {
     return;
   }
 
-  const payload = { type: state.formType, amount, date, category, note };
+  const payload = { type: state.formType, amount, date, category, note, wallet: $('#f-wallet').value };
   const saveButton = $('#btn-save');
   saveButton.disabled = true;
 
@@ -843,6 +1028,40 @@ function bindStaticEvents() {
   });
 
   $('#btn-add').addEventListener('click', () => openModal());
+
+  $('#btn-wallet-add').addEventListener('click', openWalletModal);
+  $('#wallets').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-act="sync"]');
+    if (!button) return;
+    const card = button.closest('.wallet');
+    if (card) openSync(card.dataset.id);
+  });
+
+  $('#sync-close').addEventListener('click', closeSync);
+  $('#sync-cancel').addEventListener('click', closeSync);
+  $('#sync-modal').addEventListener('click', (event) => {
+    if (event.target.id === 'sync-modal') closeSync();
+  });
+  $('#sync-form').addEventListener('submit', saveSync);
+  $('#sync-amount').addEventListener('input', (event) => {
+    const digits = event.target.value.replace(/\D/g, '').slice(0, 15);
+    event.target.value = digits ? Number(digits).toLocaleString('id-ID') : '';
+    updateSyncDiff();
+  });
+  $('#sync-delete').addEventListener('click', deleteWallet);
+
+  $('#wallet-close').addEventListener('click', closeWalletModal);
+  $('#wallet-cancel').addEventListener('click', closeWalletModal);
+  $('#wallet-modal').addEventListener('click', (event) => {
+    if (event.target.id === 'wallet-modal') closeWalletModal();
+  });
+  $('#wallet-form').addEventListener('submit', saveWallet);
+  $('#wallet-presets').addEventListener('click', (event) => {
+    const chip = event.target.closest('button[data-name]');
+    if (!chip) return;
+    $('#wallet-name').value = chip.dataset.name;
+    $('#wallet-name').focus();
+  });
 
   $('#btn-scan').addEventListener('click', () => {
     $('#scan-hint').hidden = true;
