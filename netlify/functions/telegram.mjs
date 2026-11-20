@@ -122,6 +122,184 @@ async function handleReceipt(store, message, requestUrl) {
   }
 }
 
+async function handleReport(store, chatId, args) {
+  const parts = args.filter(Boolean);
+  let targetMonth = null;
+  let targetYear = null;
+
+  if (parts.length === 0) {
+    targetMonth = monthOf(todayISO());
+  } else if (parts.length === 1) {
+    const value = parts[0];
+    if (/^\d{4}$/.test(value)) {
+      targetYear = Number(value);
+    } else if (/^\d{4}-\d{2}$/.test(value)) {
+      targetMonth = value;
+    } else if (/^\d{1,2}$/.test(value)) {
+      targetYear = Number(todayISO().slice(0, 4));
+      targetMonth = `${targetYear}-${value.padStart(2, '0')}`;
+    } else {
+      await sendMessage(chatId, 'Format laporan: /laporan, /laporan 10, /laporan 10 2026, /laporan 2026');
+      return;
+    }
+  } else {
+    const [monthToken, yearToken] = parts;
+    if (!/^\d{1,2}$/.test(monthToken) || !/^\d{4}$/.test(yearToken)) {
+      await sendMessage(chatId, 'Format laporan: /laporan 10 2026');
+      return;
+    }
+    targetMonth = `${yearToken}-${monthToken.padStart(2, '0')}`;
+    targetYear = Number(yearToken);
+  }
+
+  if (targetMonth) {
+    if (!isValidMonth(targetMonth)) {
+      await sendMessage(chatId, 'Bulan tidak valid. Gunakan 1-12.');
+      return;
+    }
+    const items = await readMonth(store, targetMonth);
+    await sendMessage(chatId, monthReportText(items, targetMonth));
+    return;
+  }
+
+  if (!isValidYear(targetYear)) {
+    await sendMessage(chatId, 'Tahun tidak valid.');
+    return;
+  }
+  const yearMonths = monthsOfYear(targetYear);
+  const map = await readMonths(store, yearMonths);
+  const items = flatten(map);
+  await sendMessage(chatId, yearReportText(items, targetYear));
+}
+
+async function handleText(store, message) {
+  const chatId = message.chat.id;
+  const text = String(message.text || '').trim();
+  if (!text.startsWith('/')) {
+    await sendMessage(chatId, 'Gunakan perintah. Ketik /help untuk daftar perintah.');
+    return;
+  }
+
+  const firstSpace = text.search(/\s/);
+  const rawCommand = (firstSpace < 0 ? text : text.slice(0, firstSpace)).toLowerCase();
+  const args = firstSpace < 0 ? '' : text.slice(firstSpace + 1).trim();
+  const command = rawCommand.split('@')[0];
+
+  if (command === '/start' || command === '/help') {
+    const suffix = allowedChats().length
+      ? ''
+      : `\n\nChat ID kamu: <code>${chatId}</code>\nSimpan nilai ini di environment variable TELEGRAM_ALLOWED_CHAT_ID agar bot hanya bisa dipakai olehmu.`;
+    await sendMessage(chatId, `${HELP_TEXT}${suffix}`);
+    return;
+  }
+
+  if (command === '/masuk' || command === '/in' || command === '/terima') {
+    const parsed = parseEntry(args);
+    if (parsed.error) {
+      await sendMessage(chatId, parsed.error);
+      return;
+    }
+    const now = new Date().toISOString();
+    const tx = {
+      id: crypto.randomUUID(),
+      type: 'in',
+      amount: parsed.amount,
+      note: parsed.note,
+      category: parsed.category || guessCategory('in', parsed.note),
+      date: parsed.date || todayISO(),
+      source: 'telegram',
+      chatId: String(chatId),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await addTransaction(store, tx);
+    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
+    return;
+  }
+
+  if (command === '/keluar' || command === '/out') {
+    const parsed = parseEntry(args);
+    if (parsed.error) {
+      await sendMessage(chatId, parsed.error);
+      return;
+    }
+    const now = new Date().toISOString();
+    const tx = {
+      id: crypto.randomUUID(),
+      type: 'out',
+      amount: parsed.amount,
+      note: parsed.note,
+      category: parsed.category || guessCategory('out', parsed.note),
+      date: parsed.date || todayISO(),
+      source: 'telegram',
+      chatId: String(chatId),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await addTransaction(store, tx);
+    await sendMessage(chatId, transactionText(tx), { reply_markup: keyboardForDeletion(tx.date.slice(0, 7), tx.id) });
+    return;
+  }
+
+  if (command === '/scan' || command === '/struk') {
+    await sendMessage(
+      chatId,
+      hasVision()
+        ? 'Kirim foto struk belanja (sebagai foto, bukan file). Bot akan membaca nominal, tanggal, dan tokonya, lalu menawarkan tombol Simpan.'
+        : 'Scan struk belum aktif: <code>GEMINI_API_KEY</code> belum diisi di environment variable Netlify.',
+    );
+    return;
+  }
+
+  if (command === '/saldo') {
+    const { all } = await allData(store);
+    const ym = monthOf(todayISO());
+    const monthItems = await readMonth(store, ym);
+    const monthSum = totals(monthItems);
+    await sendMessage(chatId, balanceText({ balance: all.net }, monthSum, ym));
+    return;
+  }
+
+  if (command === '/laporan' || command === '/report') {
+    await handleReport(store, chatId, args.split(/\s+/).filter(Boolean));
+    return;
+  }
+
+  if (command === '/tahun') {
+    const year = args && /^\d{4}$/.test(args) ? Number(args) : Number(todayISO().slice(0, 4));
+    const map = await readMonths(store, monthsOfYear(year));
+    await sendMessage(chatId, yearReportText(flatten(map), year));
+    return;
+  }
+
+  if (command === '/undo') {
+    const months = await listMonths(store);
+    const recent = months.slice(0, 6);
+    const latest = await latestTransaction(store, recent);
+    if (!latest) {
+      await sendMessage(chatId, 'Tidak ada transaksi untuk dibatalkan.');
+      return;
+    }
+    await removeTransaction(store, latest.ym, latest.tx.id);
+    const label = latest.tx.type === 'in' ? 'Pemasukan' : 'Pengeluaran';
+    await sendMessage(
+      chatId,
+      `Dibatalkan.\n${label} ${shortDate(latest.tx.date)}\n${latest.tx.note || latest.tx.category}`,
+    );
+    return;
+  }
+
+  if (command === '/kategori') {
+    await sendMessage(
+      chatId,
+      `<b>Kategori pengeluaran</b>\n${CATEGORIES.out.join(', ')}\n\n<b>Kategori pemasukan</b>\n${CATEGORIES.in.join(', ')}`,
+    );
+    return;
+  }
+
+  await sendMessage(chatId, 'Perintah tidak dikenal. Ketik /help.');
+}
+
 async function handleCallback(store, query) {
   const chatId = query.message?.chat?.id;
   const messageId = query.message?.message_id;
