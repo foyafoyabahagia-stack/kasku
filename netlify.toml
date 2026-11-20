@@ -1,0 +1,41 @@
+[build]
+  publish = "public"
+  command = "echo 'static site, no build step'"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# API dashboard -> satu function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# Webhook Telegram
+[[redirects]]
+  from = "/telegram"
+  to = "/.netlify/functions/telegram"
+  status = 200
+  force = true
+
+# Daftarkan webhook sekali lewat browser
+[[redirects]]
+  from = "/setup"
+  to = "/.netlify/functions/setup"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store"

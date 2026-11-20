@@ -1,0 +1,17 @@
+{
+  "name": "kasku",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KasKu - aplikasi keuangan pribadi dengan bot Telegram, berjalan penuh di Netlify",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "dev": "npx netlify dev"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.2.0"
+  }
+}
